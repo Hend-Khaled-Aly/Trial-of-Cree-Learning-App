@@ -1,0 +1,15 @@
+artifact_uri: file:///d:/.SeaThru/Work/AI-for-Indigenous-Language--Revitalization-in-Canada/Cree-Language-Revitalization/notebooks/mlruns/0/baae72e5f3eb4c9ba0d03cb54f22479b/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: baae72e5f3eb4c9ba0d03cb54f22479b
+run_name: ./wav2vec2-large-xlsr-cree
+run_uuid: baae72e5f3eb4c9ba0d03cb54f22479b
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1750278851776
+status: 1
+tags: []
+user_id: Hend-PC
