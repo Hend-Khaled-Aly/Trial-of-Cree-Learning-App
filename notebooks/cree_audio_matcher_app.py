@@ -5,10 +5,11 @@ import numpy as np
 import json
 import joblib
 import os
-from transformers import WhisperProcessor, WhisperModel
-from sklearn.neighbors import NearestNeighbors
 import tempfile
 import base64
+from transformers import WhisperProcessor, WhisperModel
+from sklearn.neighbors import NearestNeighbors
+from audiorecorder import audiorecorder
 
 # Set page config
 st.set_page_config(
@@ -131,9 +132,7 @@ def main():
     # Display dataset info
     with st.sidebar.expander("Dataset Info"):
         st.write(f"Total samples: {len(labels)}")
-        st.write(f"Feature dimension: {features.shape[1]}")
-        
-        # Show some sample labels
+        st.write(f"Feature dimension: {features.shape[1]}")       
         st.write("Sample labels:")
         for i, label in enumerate(labels[:5]):
             st.write(f"• {label}")
@@ -141,113 +140,94 @@ def main():
             st.write(f"... and {len(labels) - 5} more")
     
     # Main interface
-    st.header("Upload Audio File")
-    uploaded_file = st.file_uploader(
-        "Choose an audio file", 
-        type=['wav', 'mp3'],
-        help="Upload a WAV or MP3 file to find similar audio clips"
-    )
-    
-    if uploaded_file is not None:
-        # Save uploaded file temporarily
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
-            tmp_file.write(uploaded_file.read())
+        # Audio Input Section
+    st.header("🎙️ Input Audio")
+    method = st.radio("Choose input method", ["Upload Audio File", "Record Audio"])
+
+    audio_bytes = None
+    audio_filename = None
+
+    if method == "Upload Audio File":
+        uploaded_file = st.file_uploader("Upload WAV or MP3", type=["wav", "mp3"])
+        if uploaded_file:
+            audio_bytes = uploaded_file.getvalue()
+            audio_filename = uploaded_file.name
+            st.audio(audio_bytes, format=f"audio/{audio_filename.split('.')[-1]}")
+
+    elif method == "Record Audio":
+        st.info("Click 'Start Recording' then 'Stop Recording'. Wait a moment for preview.")
+        recorded_audio = audiorecorder("Start Recording", "Stop Recording")
+        if recorded_audio:
+            from io import BytesIO
+            buffer = BytesIO()
+            recorded_audio.export(buffer, format="wav")
+            audio_bytes = buffer.getvalue()
+            audio_filename = "recorded.wav"
+            st.audio(audio_bytes, format="audio/wav")
+
+
+    if audio_bytes and audio_filename:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_filename.split('.')[-1]}") as tmp_file:
+            tmp_file.write(audio_bytes)
             temp_path = tmp_file.name
-        
+
         try:
-            col1, col2 = st.columns([1, 2])
-            
-            with col1:
-                st.subheader("🎤 Uploaded Audio")
-                st.write(f"**Filename:** {uploaded_file.name}")
-                
-                # Display uploaded audio player
-                try:
-                    audio_bytes = uploaded_file.getvalue()
-                    st.audio(audio_bytes, format=f'audio/{uploaded_file.name.split(".")[-1]}')
-                except:
-                    st.error("Could not display audio player for uploaded file")
-            
-            with col2:
-                st.subheader("🔍 Processing...")
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                
-                # Extract embeddings and find matches
-                status_text.text("Extracting audio embeddings...")
-                progress_bar.progress(30)
-                
-                try:
-                    results = query_audio(temp_path, knn_model, labels, paths, processor, model, top_k)
-                    progress_bar.progress(100)
-                    status_text.text("✅ Processing complete!")
-                    
-                    # Display results
-                    st.subheader("🎯 Top Matches")
-                    
-                    for result in results:
-                        with st.expander(f"#{result['rank']} - {result['label']} (Distance: {result['distance']:.3f})"):
-                            col_info, col_audio = st.columns([1, 2])
-                            
-                            with col_info:
-                                st.write(f"**Label:** {result['label']}")
-                                st.write(f"**Distance:** {result['distance']:.3f}")
-                                st.write(f"**Similarity:** {(1 - result['distance']):.3f}")
-                                
-                                # Color-code similarity
-                                similarity = 1 - result['distance']
-                                if similarity > 0.8:
-                                    st.success("🟢 Very Similar")
-                                elif similarity > 0.6:
-                                    st.warning("🟡 Moderately Similar")
-                                else:
-                                    st.error("🔴 Less Similar")
-                            
-                            with col_audio:
-                                st.write("**Original Audio:**")
-                                if os.path.exists(result['path']):
-                                    try:
-                                        with open(result['path'], 'rb') as audio_file:
-                                            audio_data = audio_file.read()
-                                        st.audio(audio_data, format=f'audio/{result["path"].split(".")[-1]}')
-                                    except Exception as e:
-                                        st.error(f"Could not load audio: {str(e)}")
-                                else:
-                                    st.error("Audio file not found")
-                    
-                    # Summary statistics
-                    st.subheader("📊 Match Summary")
-                    avg_distance = np.mean([r['distance'] for r in results])
-                    min_distance = min([r['distance'] for r in results])
-                    
-                    col1, col2, col3 = st.columns(3)
+            st.subheader("🔍 Processing...")
+            progress_bar = st.progress(0)
+            status = st.empty()
+
+            status.text("Extracting embeddings...")
+            progress_bar.progress(30)
+
+            results = query_audio(temp_path, knn_model, labels, paths, processor, model, top_k)
+
+            progress_bar.progress(100)
+            status.text("✅ Done!")
+
+            st.subheader("🎯 Top Matches")
+            for result in results:
+                with st.expander(f"#{result['rank']} - {result['label']} (Distance: {result['distance']:.3f})"):
+                    col1, col2 = st.columns([1, 2])
                     with col1:
-                        st.metric("Best Match Distance", f"{min_distance:.3f}")
+                        st.write(f"**Label:** {result['label']}")
+                        st.write(f"**Distance:** {result['distance']:.3f}")
+                        similarity = 1 - result['distance']
+                        st.write(f"**Similarity:** {similarity:.3f}")
+                        if similarity > 0.8:
+                            st.success("🟢 Very Similar")
+                        elif similarity > 0.6:
+                            st.warning("🟡 Moderately Similar")
+                        else:
+                            st.error("🔴 Less Similar")
                     with col2:
-                        st.metric("Average Distance", f"{avg_distance:.3f}")
-                    with col3:
-                        st.metric("Best Similarity", f"{(1-min_distance):.3f}")
-                    
-                except Exception as e:
-                    progress_bar.progress(0)
-                    status_text.text("❌ Error during processing")
-                    st.error(f"Error processing audio: {str(e)}")
-        
+                        if os.path.exists(result['path']):
+                            with open(result['path'], 'rb') as f:
+                                st.audio(f.read(), format="audio/wav")
+                        else:
+                            st.error("Audio file not found")
+
+            st.subheader("📊 Summary")
+            distances = [r["distance"] for r in results]
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Best Distance", f"{min(distances):.3f}")
+            col2.metric("Average", f"{np.mean(distances):.3f}")
+            col3.metric("Best Similarity", f"{1 - min(distances):.3f}")
+
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
+
         finally:
-            # Clean up temporary file
             if os.path.exists(temp_path):
-                os.unlink(temp_path)
-    
-    # Footer
+                os.remove(temp_path)
+
     st.markdown("---")
     st.markdown(
         """
         <div style='text-align: center; color: gray;'>
-            <p>Audio Matching System using Whisper Embeddings + K-Nearest Neighbors</p>
-            <p>Built with Streamlit 🚀</p>
+            <p>Audio Matching System using Whisper + KNN</p>
+            <p>Built with Streamlit 🎧</p>
         </div>
-        """, 
-        unsafe_allow_html=True
+        """, unsafe_allow_html=True
     )
 
 if __name__ == "__main__":
