@@ -12,7 +12,7 @@ import pandas as pd
 import pickle
 from transformers import WhisperProcessor, WhisperModel
 from sklearn.neighbors import NearestNeighbors
-from audiorecorder import audiorecorder
+from streamlit_audiorecorder import audiorecorder
 from cree_learning_model import CreeLearningModel
 
 # Set page config

@@ -7,4 +7,4 @@ matplotlib
 scikit-learn
 joblib
 transformers
-audiorecorder
+streamlit-audiorecorder
