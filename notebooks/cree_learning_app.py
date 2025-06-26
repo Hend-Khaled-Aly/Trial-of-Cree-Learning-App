@@ -12,16 +12,8 @@ import pandas as pd
 import pickle
 from transformers import WhisperProcessor, WhisperModel
 from sklearn.neighbors import NearestNeighbors
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+from audiorecorder import audiorecorder
 from cree_learning_model import CreeLearningModel
-import av
-import soundfile as sf
-import threading
-import time
-from pathlib import Path
-
-
-
 
 # Set page config
 st.set_page_config(
@@ -31,16 +23,11 @@ st.set_page_config(
 )
 
 # Constants for audio app
-BASE_DIR = Path(__file__).resolve().parent
-MODEL_PATH = BASE_DIR.parent / "models" / "cree_learning_model.pkl"
-MODELS_DIR = BASE_DIR.parent / "models" / "audio"
+MODELS_DIR = "../models/audio"
 FEATURES_PATH = os.path.join(MODELS_DIR, "features.npy")
 KNN_MODEL_PATH = os.path.join(MODELS_DIR, "knn_model.pkl")
 LABELS_PATH = os.path.join(MODELS_DIR, "labels.json")
 PATHS_PATH = os.path.join(MODELS_DIR, "paths.json")
-
-# Global variables for audio recording
-recording_lock = threading.Lock()
 
 # Cache functions for audio app
 @st.cache_resource
@@ -77,11 +64,7 @@ def load_dataset():
 def load_cree_model():
     """Load and cache the Cree learning model"""
     model = CreeLearningModel()
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    model_path = os.path.join(base_dir, "..", "models", "cree_learning_model.pkl")
-    if not os.path.exists(model_path):
-        raise FileNotFoundError(f"Model file not found at: {model_path}")
-    model.load_model(model_path)
+    model.load_model("../models/cree_learning_model.pkl")
     return model
 
 # Audio processing functions
@@ -140,165 +123,6 @@ def get_audio_player_html(audio_path):
     except Exception as e:
         return f"<p>Error loading audio: {str(e)}</p>"
 
-class AudioProcessor:
-    """Audio processor for WebRTC streaming"""
-    def recv(self, frame: av.AudioFrame) -> av.AudioFrame:
-        # Convert audio frame to numpy array
-        audio_array = frame.to_ndarray()
-        
-        # Store the audio data in session state
-        if 'audio_frames' not in st.session_state:
-            st.session_state.audio_frames = []
-        
-        st.session_state.audio_frames.append(audio_array)
-        
-        return frame
-    
-def record_audio_webrtc():
-    """Improved audio recording function using session state"""
-    
-    # Initialize session state variables
-    if 'audio_frames' not in st.session_state:
-        st.session_state.audio_frames = []
-    if 'recording_complete' not in st.session_state:
-        st.session_state.recording_complete = False
-    if 'recording_started' not in st.session_state:
-        st.session_state.recording_started = False
-    
-    # WebRTC configuration
-    rtc_configuration = RTCConfiguration({
-        "iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]
-    })
-    
-    # Create the WebRTC streamer
-    ctx = webrtc_streamer(
-        key="audio-recorder",
-        mode=WebRtcMode.SENDONLY,
-        audio_receiver_size=1024,
-        rtc_configuration=rtc_configuration,
-        media_stream_constraints={
-            "audio": {
-                "sampleRate": 16000,
-                "channelCount": 1,
-                "echoCancellation": True,
-                "noiseSuppression": True,
-            },
-            "video": False
-        },
-        audio_processor_factory=AudioProcessor,
-        async_processing=True,
-    )
-    
-    # Handle recording states
-    if ctx.state.playing:
-        if not st.session_state.recording_started:
-            # Just started recording, clear previous data
-            st.session_state.audio_frames = []
-            st.session_state.recording_complete = False
-            st.session_state.recording_started = True
-        
-        st.info("🎙️ Recording in progress... Click 'Stop' when finished.")
-        
-        # Real-time frame collection from audio receiver
-        if ctx.audio_receiver:
-            try:
-                frames = ctx.audio_receiver.get_frames(timeout=0.1)
-                for frame in frames:
-                    audio_array = frame.to_ndarray()
-                    st.session_state.audio_frames.append(audio_array)
-            except Exception:
-                # Timeout or other error - continue
-                pass
-                
-    elif not ctx.state.playing and st.session_state.recording_started and not st.session_state.recording_complete:
-        # Recording just stopped
-        st.session_state.recording_started = False
-        st.session_state.recording_complete = True
-        
-        if len(st.session_state.audio_frames) > 0:
-            st.success("✅ Recording completed!")
-            
-            try:
-                # Process the collected audio
-                combined_audio = np.concatenate(st.session_state.audio_frames, axis=0)
-                
-                # Handle stereo to mono conversion if needed
-                if len(combined_audio.shape) > 1 and combined_audio.shape[1] > 1:
-                    combined_audio = np.mean(combined_audio, axis=1)
-                
-                # Flatten and convert to float32
-                combined_audio = combined_audio.flatten().astype(np.float32)
-                
-                if len(combined_audio) > 0:
-                    # Save to temporary file
-                    temp_dir = tempfile.gettempdir()
-                    temp_audio_path = os.path.join(temp_dir, f"recorded_audio_{int(time.time())}.wav")
-                    
-                    # Write audio file
-                    sf.write(temp_audio_path, combined_audio, samplerate=16000)
-                    
-                    # Verify file was created and has content
-                    if os.path.exists(temp_audio_path) and os.path.getsize(temp_audio_path) > 0:
-                        duration = len(combined_audio) / 16000
-                        st.success(f"Audio saved successfully! Duration: {duration:.2f} seconds")
-                        
-                        # Store the path in session state
-                        st.session_state.temp_audio_path = temp_audio_path
-                        
-                        # Show audio player
-                        st.audio(combined_audio, sample_rate=16000)
-                        
-                        return temp_audio_path
-                    else:
-                        st.error("Failed to save audio file")
-                        return None
-                else:
-                    st.warning("No audio data recorded")
-                    return None
-                    
-            except Exception as e:
-                st.error(f"Error processing audio: {str(e)}")
-                return None
-        else:
-            st.warning("No audio frames were captured during recording")
-            return None
-    
-    elif st.session_state.recording_complete and 'temp_audio_path' in st.session_state:
-        # Show previously recorded audio
-        if os.path.exists(st.session_state.temp_audio_path):
-            st.success("✅ Audio ready for processing!")
-            with open(st.session_state.temp_audio_path, 'rb') as f:
-                audio_bytes = f.read()
-            st.audio(audio_bytes)
-            return st.session_state.temp_audio_path
-    
-    # Reset button
-    col1, col2 = st.columns([1, 1])
-    with col1:
-        if st.button("🔄 Reset Recording", key="reset_recording"):
-            # Clean up session state
-            st.session_state.audio_frames = []
-            st.session_state.recording_complete = False
-            st.session_state.recording_started = False
-            
-            # Clean up temporary file
-            if 'temp_audio_path' in st.session_state:
-                if os.path.exists(st.session_state.temp_audio_path):
-                    try:
-                        os.remove(st.session_state.temp_audio_path)
-                    except:
-                        pass
-                del st.session_state.temp_audio_path
-            
-            st.rerun()
-    
-    with col2:
-        if st.session_state.recording_complete:
-            st.info("✅ Recording ready!")
-    
-    return None
-
-
 def audio_learning_app():
     """Audio Learning/Matching App"""
     st.header("🎵 Audio Matching")
@@ -337,7 +161,6 @@ def audio_learning_app():
 
     audio_bytes = None
     audio_filename = None
-    temp_path = None
 
     if method == "Upload Audio File":
         uploaded_file = st.file_uploader("Upload WAV or MP3", type=["wav", "mp3"])
@@ -346,67 +169,70 @@ def audio_learning_app():
             audio_filename = uploaded_file.name
             st.audio(audio_bytes, format=f"audio/{audio_filename.split('.')[-1]}")
 
-            # Save uploaded file to temporary location
-            temp_path = os.path.join(tempfile.gettempdir(), f"uploaded_{audio_filename}")
-            with open(temp_path, 'wb') as f:
-                f.write(audio_bytes)
-
     elif method == "Record Audio":
-        st.info("🎤 Click “Start” to begin recording, “Stop” to end.")
-        temp_path = record_audio_webrtc()
-    
-    if temp_path and os.path.exists(temp_path):
-        st.markdown("---")
-        if st.button("🔍 Process Audio", type="primary", use_container_width=True):
-            try:
-                st.subheader("🔍 Processing...")
-                progress_bar = st.progress(0)
-                status = st.empty()
+        st.info("Click 'Start Recording' then 'Stop Recording'. Wait a moment for preview.")
+        recorded_audio = audiorecorder("Start Recording", "Stop Recording")
+        if recorded_audio:
+            from io import BytesIO
+            buffer = BytesIO()
+            recorded_audio.export(buffer, format="wav")
+            audio_bytes = buffer.getvalue()
+            audio_filename = "recorded.wav"
+            st.audio(audio_bytes, format="audio/wav")
 
-                status.text("Extracting embeddings...")
-                progress_bar.progress(30)
+    if audio_bytes and audio_filename:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_filename.split('.')[-1]}") as tmp_file:
+            tmp_file.write(audio_bytes)
+            temp_path = tmp_file.name
 
-                results = query_audio(temp_path, knn_model, labels, paths, processor, model, top_k)
+        try:
+            st.subheader("🔍 Processing...")
+            progress_bar = st.progress(0)
+            status = st.empty()
 
-                progress_bar.progress(100)
-                status.text("✅ Done!")
+            status.text("Extracting embeddings...")
+            progress_bar.progress(30)
 
-                st.subheader("🎯 Top Matches")
-                for result in results:
-                    with st.expander(f"#{result['rank']} - {result['label']} (Distance: {result['distance']:.3f})"):
-                        col1, col2 = st.columns([1, 2])
-                        with col1:
-                            st.write(f"**Label:** {result['label']}")
-                            st.write(f"**Distance:** {result['distance']:.3f}")
-                            similarity = 1 - result['distance']
-                            st.write(f"**Similarity:** {similarity:.3f}")
-                            if similarity > 0.8:
-                                st.success("🟢 Very Similar")
-                            elif similarity > 0.6:
-                                st.warning("🟡 Moderately Similar")
-                            else:
-                                st.error("🔴 Less Similar")
-                        with col2:
-                            if os.path.exists(result['path']):
-                                with open(result['path'], 'rb') as f:
-                                    st.audio(f.read(), format="audio/wav")
-                            else:
-                                st.error("Audio file not found")
+            results = query_audio(temp_path, knn_model, labels, paths, processor, model, top_k)
 
-                st.subheader("📊 Summary")
-                distances = [r["distance"] for r in results]
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Best Distance", f"{min(distances):.3f}")
-                col2.metric("Average", f"{np.mean(distances):.3f}")
-                col3.metric("Best Similarity", f"{1 - min(distances):.3f}")
+            progress_bar.progress(100)
+            status.text("✅ Done!")
 
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-                st.exception(e)
+            st.subheader("🎯 Top Matches")
+            for result in results:
+                with st.expander(f"#{result['rank']} - {result['label']} (Distance: {result['distance']:.3f})"):
+                    col1, col2 = st.columns([1, 2])
+                    with col1:
+                        st.write(f"**Label:** {result['label']}")
+                        st.write(f"**Distance:** {result['distance']:.3f}")
+                        similarity = 1 - result['distance']
+                        st.write(f"**Similarity:** {similarity:.3f}")
+                        if similarity > 0.8:
+                            st.success("🟢 Very Similar")
+                        elif similarity > 0.6:
+                            st.warning("🟡 Moderately Similar")
+                        else:
+                            st.error("🔴 Less Similar")
+                    with col2:
+                        if os.path.exists(result['path']):
+                            with open(result['path'], 'rb') as f:
+                                st.audio(f.read(), format="audio/wav")
+                        else:
+                            st.error("Audio file not found")
 
-            finally:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
+            st.subheader("📊 Summary")
+            distances = [r["distance"] for r in results]
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Best Distance", f"{min(distances):.3f}")
+            col2.metric("Average", f"{np.mean(distances):.3f}")
+            col3.metric("Best Similarity", f"{1 - min(distances):.3f}")
+
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
+
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
 
 def text_learning_app():
     """Text Learning App"""
