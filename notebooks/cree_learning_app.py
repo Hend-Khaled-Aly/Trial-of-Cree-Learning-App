@@ -18,6 +18,8 @@ import av
 import soundfile as sf
 import threading
 import time
+from pathlib import Path
+
 
 
 
@@ -29,7 +31,9 @@ st.set_page_config(
 )
 
 # Constants for audio app
-MODELS_DIR = "../models/audio"
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = BASE_DIR.parent / "models" / "cree_learning_model.pkl"
+MODELS_DIR = BASE_DIR.parent / "models" / "audio"
 FEATURES_PATH = os.path.join(MODELS_DIR, "features.npy")
 KNN_MODEL_PATH = os.path.join(MODELS_DIR, "knn_model.pkl")
 LABELS_PATH = os.path.join(MODELS_DIR, "labels.json")
