@@ -1,0 +1,10 @@
+streamlit
+torch
+torchaudio
+numpy
+pandas
+matplotlib
+scikit-learn
+joblib
+transformers
+audiorecorder
