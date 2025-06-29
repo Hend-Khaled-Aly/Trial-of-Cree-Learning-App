@@ -12,7 +12,6 @@ import pandas as pd
 import pickle
 from transformers import WhisperProcessor, WhisperModel
 from sklearn.neighbors import NearestNeighbors
-from audiorecorder import audiorecorder
 from cree_learning_model import CreeLearningModel
 
 # Set page config
@@ -157,28 +156,13 @@ def audio_learning_app():
     
     # Audio Input Section
     st.subheader("🎙️ Input Audio")
-    method = st.radio("Choose input method", ["Upload Audio File", "Record Audio"])
-
+    uploaded_file = st.file_uploader("Upload WAV or MP3", type=["wav", "mp3"])
     audio_bytes = None
     audio_filename = None
-
-    if method == "Upload Audio File":
-        uploaded_file = st.file_uploader("Upload WAV or MP3", type=["wav", "mp3"])
-        if uploaded_file:
-            audio_bytes = uploaded_file.getvalue()
-            audio_filename = uploaded_file.name
-            st.audio(audio_bytes, format=f"audio/{audio_filename.split('.')[-1]}")
-
-    elif method == "Record Audio":
-        st.info("Click 'Start Recording' then 'Stop Recording'. Wait a moment for preview.")
-        recorded_audio = audiorecorder("Start Recording", "Stop Recording")
-        if recorded_audio:
-            from io import BytesIO
-            buffer = BytesIO()
-            recorded_audio.export(buffer, format="wav")
-            audio_bytes = buffer.getvalue()
-            audio_filename = "recorded.wav"
-            st.audio(audio_bytes, format="audio/wav")
+    if uploaded_file:
+        audio_bytes = uploaded_file.getvalue()
+        audio_filename = uploaded_file.name
+        st.audio(audio_bytes, format=f"audio/{audio_filename.split('.')[-1]}")
 
     if audio_bytes and audio_filename:
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_filename.split('.')[-1]}") as tmp_file:
