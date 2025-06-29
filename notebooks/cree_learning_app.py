@@ -13,9 +13,6 @@ import pickle
 from transformers import WhisperProcessor, WhisperModel
 from sklearn.neighbors import NearestNeighbors
 from cree_learning_model import CreeLearningModel
-import librosa
-from pydub import AudioSegment
-import io
 
 # Set page config
 st.set_page_config(
@@ -125,11 +122,14 @@ def load_audio(path, sample_rate=16000):
     except Exception as e1:
         try:
             # Fallback: Try converting with librosa if available
+            import librosa
             wav, sr = librosa.load(path, sr=sample_rate, mono=True)
             return wav, sample_rate
         except Exception as e2:
             try:
                 # Fallback: Try with pydub for MP3 files
+                from pydub import AudioSegment
+                import io
                 
                 # Load with pydub
                 if path.lower().endswith('.mp3'):
