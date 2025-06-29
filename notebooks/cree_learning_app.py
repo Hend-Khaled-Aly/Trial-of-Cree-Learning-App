@@ -111,60 +111,76 @@ def load_cree_model():
         return None
 
 # Audio processing functions with better error handling
-def load_audio(path, sample_rate=16000):
-    """Load and preprocess audio file with error handling and multiple backends"""
+def convert_mp3_to_wav_browser(uploaded_file):
+    """Convert MP3 to WAV using browser-compatible method"""
     try:
-        # First try with torchaudio
+        # Use streamlit's built-in audio processing
+        audio_bytes = uploaded_file.getvalue()
+        
+        # Create a temporary MP3 file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_mp3:
+            tmp_mp3.write(audio_bytes)
+            tmp_mp3_path = tmp_mp3.name
+        
+        # Try to use ffmpeg if available (common in cloud environments)
+        try:
+            import subprocess
+            wav_path = tmp_mp3_path.replace('.mp3', '.wav')
+            
+            # Use ffmpeg to convert MP3 to WAV
+            cmd = [
+                'ffmpeg', '-i', tmp_mp3_path, 
+                '-ar', '16000',  # 16kHz sample rate
+                '-ac', '1',      # mono
+                '-f', 'wav',     # WAV format
+                wav_path, '-y'   # overwrite output
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0 and os.path.exists(wav_path):
+                # Clean up MP3 file
+                os.unlink(tmp_mp3_path)
+                return wav_path
+            else:
+                st.error(f"FFmpeg conversion failed: {result.stderr}")
+                os.unlink(tmp_mp3_path)
+                return None
+                
+        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+            os.unlink(tmp_mp3_path)
+            st.error(f"FFmpeg not available: {str(e)}")
+            return None
+            
+    except Exception as e:
+        st.error(f"Error in MP3 conversion: {str(e)}")
+        return None
+
+def load_audio(path, sample_rate=16000):
+    """Load and preprocess audio file with error handling"""
+    try:
+        # For MP3 files, try conversion first
+        if path.lower().endswith('.mp3'):
+            st.info("🔄 Converting MP3 to WAV format...")
+            # This won't work directly, we need to handle this in the upload section
+            pass
+        
+        # Try loading with torchaudio
         wav, sr = torchaudio.load(path)
         if sr != sample_rate:
             wav = torchaudio.functional.resample(wav, sr, sample_rate)
         return wav.mean(dim=0).numpy(), sample_rate  # mono
-    except Exception as e1:
-        try:
-            # Fallback: Try converting with librosa if available
-            import librosa
-            wav, sr = librosa.load(path, sr=sample_rate, mono=True)
-            return wav, sample_rate
-        except Exception as e2:
-            try:
-                # Fallback: Try with pydub for MP3 files
-                from pydub import AudioSegment
-                import io
-                
-                # Load with pydub
-                if path.lower().endswith('.mp3'):
-                    audio = AudioSegment.from_mp3(path)
-                else:
-                    audio = AudioSegment.from_wav(path)
-                
-                # Convert to wav format in memory
-                wav_buffer = io.BytesIO()
-                audio.set_frame_rate(sample_rate).set_channels(1).export(wav_buffer, format="wav")
-                wav_buffer.seek(0)
-                
-                # Save to temporary wav file and load with torchaudio
-                import tempfile
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
-                    tmp_wav.write(wav_buffer.getvalue())
-                    tmp_wav_path = tmp_wav.name
-                
-                try:
-                    wav, sr = torchaudio.load(tmp_wav_path)
-                    os.unlink(tmp_wav_path)  # Clean up temp file
-                    if sr != sample_rate:
-                        wav = torchaudio.functional.resample(wav, sr, sample_rate)
-                    return wav.mean(dim=0).numpy(), sample_rate
-                except Exception as e3:
-                    if os.path.exists(tmp_wav_path):
-                        os.unlink(tmp_wav_path)
-                    raise e3
-                    
-            except Exception as e3:
-                st.error(f"Error loading audio file with all backends:")
-                st.error(f"- torchaudio: {str(e1)}")
-                st.error(f"- librosa: {str(e2)}")
-                st.error(f"- pydub: {str(e3)}")
-                return None, None
+        
+    except Exception as e:
+        st.error(f"Error loading audio file: {str(e)}")
+        
+        # Try to provide more specific error information
+        if "backend" in str(e).lower():
+            st.error("🔧 **Audio Backend Issue**: The cloud environment doesn't support this audio format.")
+            st.info("💡 **Solution**: Please convert your MP3 to WAV format before uploading.")
+            st.info("🛠️ **How to convert**: Use online converters like CloudConvert, or audio software like Audacity.")
+        
+        return None, None
 
 def extract_whisper_embedding(audio_path, processor, model):
     """Extract Whisper embeddings from audio file with error handling"""
@@ -280,87 +296,126 @@ def audio_learning_app():
     
     # Audio Input Section
     st.subheader("🎙️ Input Audio")
-    st.info("💡 **Tip**: WAV files work best. MP3 files may require additional processing.")
-    uploaded_file = st.file_uploader("Upload WAV or MP3", type=["wav", "mp3"])
+    
+    # Add format information
+    with st.expander("📋 Supported Audio Formats"):
+        st.write("**✅ Fully supported:** WAV files")
+        st.write("**⚠️ Limited support:** MP3 files (requires conversion)")
+        st.write("**📏 Recommended:** 2-30 seconds, 16kHz sample rate")
+    
+    uploaded_file = st.file_uploader("Upload Audio File", type=["wav", "mp3"])
     
     if uploaded_file:
         audio_bytes = uploaded_file.getvalue()
         audio_filename = uploaded_file.name
+        file_extension = audio_filename.split('.')[-1].lower()
         
         # Show file info
-        st.write(f"📁 **File**: {audio_filename}")
-        st.write(f"📏 **Size**: {len(audio_bytes)} bytes")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"📁 **File**: {audio_filename}")
+            st.write(f"📏 **Size**: {len(audio_bytes):,} bytes")
+        with col2:
+            st.write(f"🎵 **Format**: {file_extension.upper()}")
+            if file_extension == 'mp3':
+                st.warning("⚠️ MP3 format may require conversion")
         
-        st.audio(audio_bytes, format=f"audio/{audio_filename.split('.')[-1]}")
+        st.audio(audio_bytes, format=f"audio/{file_extension}")
 
-        # Create temporary file with proper extension
-        file_extension = audio_filename.split('.')[-1].lower()
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
-            tmp_file.write(audio_bytes)
-            temp_path = tmp_file.name
+        # Handle different file formats
+        temp_path = None
+        conversion_needed = file_extension == 'mp3'
+        
+        if conversion_needed:
+            st.info("🔄 MP3 detected. Attempting conversion...")
+            
+            # Try FFmpeg conversion
+            converted_path = convert_mp3_to_wav_browser(uploaded_file)
+            if converted_path:
+                temp_path = converted_path
+                st.success("✅ Successfully converted MP3 to WAV!")
+            else:
+                st.error("❌ MP3 conversion failed.")
+                st.markdown("""
+                **🛠️ Manual Conversion Required:**
+                
+                1. **Online Converters**: Use [CloudConvert](https://cloudconvert.com/mp3-to-wav) or [Online-Convert](https://audio.online-convert.com/convert-to-wav)
+                2. **Desktop Software**: Use Audacity (free) or other audio editors
+                3. **Settings**: Convert to WAV, 16kHz sample rate, mono channel
+                
+                **Or try this quick fix:**
+                - Record your audio again and save as WAV format
+                """)
+                return
+        else:
+            # Create temporary file for WAV
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
+                tmp_file.write(audio_bytes)
+                temp_path = tmp_file.name
 
         try:
-            st.subheader("🔍 Processing...")
-            progress_bar = st.progress(0)
-            status = st.empty()
+            if temp_path and os.path.exists(temp_path):
+                st.subheader("🔍 Processing...")
+                progress_bar = st.progress(0)
+                status = st.empty()
 
-            status.text("Extracting embeddings...")
-            progress_bar.progress(30)
+                status.text("Extracting embeddings...")
+                progress_bar.progress(30)
 
-            results = query_audio(temp_path, knn_model, labels, paths, processor, model, top_k)
+                results = query_audio(temp_path, knn_model, labels, paths, processor, model, top_k)
 
-            if not results:
-                st.error("Failed to process audio. Please try a different file.")
-                st.info("**Troubleshooting tips:**")
-                st.info("• Try using a WAV file instead of MP3")
-                st.info("• Ensure the audio file is not corrupted")
-                st.info("• Try a shorter audio clip (< 30 seconds)")
-                return
+                if not results:
+                    st.error("Failed to process audio.")
+                    st.info("**Possible solutions:**")
+                    st.info("• Try converting MP3 to WAV format first")
+                    st.info("• Ensure audio is clear and not corrupted")
+                    st.info("• Try a different audio file")
+                    return
 
-            progress_bar.progress(100)
-            status.text("✅ Done!")
+                progress_bar.progress(100)
+                status.text("✅ Done!")
 
-            st.subheader("🎯 Top Matches")
-            for result in results:
-                with st.expander(f"#{result['rank']} - {result['label']} (Distance: {result['distance']:.3f})"):
-                    col1, col2 = st.columns([1, 2])
-                    with col1:
-                        st.write(f"**Label:** {result['label']}")
-                        st.write(f"**Distance:** {result['distance']:.3f}")
-                        similarity = 1 - result['distance']
-                        st.write(f"**Similarity:** {similarity:.3f}")
-                        if similarity > 0.8:
-                            st.success("🟢 Very Similar")
-                        elif similarity > 0.6:
-                            st.warning("🟡 Moderately Similar")
-                        else:
-                            st.error("🔴 Less Similar")
-                    with col2:
-                        if os.path.exists(result['path']):
-                            try:
-                                with open(result['path'], 'rb') as f:
-                                    st.audio(f.read(), format="audio/wav")
-                            except Exception as e:
-                                st.error(f"Error playing audio: {str(e)}")
-                        else:
-                            st.error("Audio file not found")
+                st.subheader("🎯 Top Matches")
+                for result in results:
+                    with st.expander(f"#{result['rank']} - {result['label']} (Distance: {result['distance']:.3f})"):
+                        col1, col2 = st.columns([1, 2])
+                        with col1:
+                            st.write(f"**Label:** {result['label']}")
+                            st.write(f"**Distance:** {result['distance']:.3f}")
+                            similarity = 1 - result['distance']
+                            st.write(f"**Similarity:** {similarity:.3f}")
+                            if similarity > 0.8:
+                                st.success("🟢 Very Similar")
+                            elif similarity > 0.6:
+                                st.warning("🟡 Moderately Similar")
+                            else:
+                                st.error("🔴 Less Similar")
+                        with col2:
+                            if os.path.exists(result['path']):
+                                try:
+                                    with open(result['path'], 'rb') as f:
+                                        st.audio(f.read(), format="audio/wav")
+                                except Exception as e:
+                                    st.error(f"Error playing audio: {str(e)}")
+                            else:
+                                st.error("Audio file not found")
 
-            st.subheader("📊 Summary")
-            distances = [r["distance"] for r in results]
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Best Distance", f"{min(distances):.3f}")
-            col2.metric("Average", f"{np.mean(distances):.3f}")
-            col3.metric("Best Similarity", f"{1 - min(distances):.3f}")
+                st.subheader("📊 Summary")
+                distances = [r["distance"] for r in results]
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Best Distance", f"{min(distances):.3f}")
+                col2.metric("Average", f"{np.mean(distances):.3f}")
+                col3.metric("Best Similarity", f"{1 - min(distances):.3f}")
 
         except Exception as e:
             st.error(f"❌ Error processing audio: {str(e)}")
             st.info("**Debug Information:**")
-            st.info(f"• File extension: {file_extension}")
-            st.info(f"• Temp file path: {temp_path}")
-            st.info(f"• File exists: {os.path.exists(temp_path)}")
+            st.info(f"• File format: {file_extension}")
+            st.info(f"• Conversion needed: {conversion_needed}")
+            st.info(f"• Temp file exists: {os.path.exists(temp_path) if temp_path else 'No temp file'}")
 
         finally:
-            if os.path.exists(temp_path):
+            if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
 
 def text_learning_app():
