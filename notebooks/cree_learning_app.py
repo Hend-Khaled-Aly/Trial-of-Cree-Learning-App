@@ -21,28 +21,55 @@ st.set_page_config(
     layout="wide"
 )
 
-# Constants for audio app
-MODELS_DIR = "../models/audio"
+# Constants for audio app - Fixed paths for cloud deployment
+MODELS_DIR = "models/audio"  # Relative path without ../
 FEATURES_PATH = os.path.join(MODELS_DIR, "features.npy")
 KNN_MODEL_PATH = os.path.join(MODELS_DIR, "knn_model.pkl")
 LABELS_PATH = os.path.join(MODELS_DIR, "labels.json")
 PATHS_PATH = os.path.join(MODELS_DIR, "paths.json")
 
+# Helper function to check if files exist
+def check_audio_files():
+    """Check if all required audio model files exist"""
+    required_files = [FEATURES_PATH, KNN_MODEL_PATH, LABELS_PATH, PATHS_PATH]
+    missing_files = []
+    
+    for file_path in required_files:
+        if not os.path.exists(file_path):
+            missing_files.append(file_path)
+    
+    return len(missing_files) == 0, missing_files
+
 # Cache functions for audio app
 @st.cache_resource
 def load_whisper_model():
-    """Load and cache the Whisper model"""
-    processor = WhisperProcessor.from_pretrained("openai/whisper-large-v3")
-    model = WhisperModel.from_pretrained("openai/whisper-large-v3")
-    model.eval()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = model.to(device)
-    return processor, model, device
+    """Load and cache the Whisper model with error handling"""
+    try:
+        # Use smaller model for cloud deployment to reduce memory usage
+        model_name = "openai/whisper-small"  # Changed from whisper-large-v3
+        processor = WhisperProcessor.from_pretrained(model_name)
+        model = WhisperModel.from_pretrained(model_name)
+        model.eval()
+        
+        # Force CPU usage on cloud to avoid CUDA issues
+        device = "cpu"  # Force CPU for cloud deployment
+        model = model.to(device)
+        
+        return processor, model, device
+    except Exception as e:
+        st.error(f"Failed to load Whisper model: {str(e)}")
+        return None, None, None
 
 @st.cache_data
 def load_dataset():
-    """Load the pre-computed features and metadata"""
+    """Load the pre-computed features and metadata with error handling"""
     try:
+        # Check if files exist first
+        files_exist, missing_files = check_audio_files()
+        if not files_exist:
+            st.error(f"Missing required files: {missing_files}")
+            return None, None, None, None
+        
         features = np.load(FEATURES_PATH)
         
         with open(LABELS_PATH, "r", encoding="utf-8") as f:
@@ -56,59 +83,93 @@ def load_dataset():
         return features, labels, paths, knn_model
     except Exception as e:
         st.error(f"Error loading dataset: {str(e)}")
+        st.error(f"Current working directory: {os.getcwd()}")
+        st.error(f"Files in current directory: {os.listdir('.')}")
         return None, None, None, None
 
 # Cache function for text app
 @st.cache_resource
 def load_cree_model():
-    """Load and cache the Cree learning model"""
-    current_dir = os.path.dirname(__file__)
-    model_path = os.path.join(current_dir, "..", "models", "cree_learning_model.pkl")
-    if not os.path.exists(model_path):
-        st.error(f"❌ Model file not found at: {model_path}")
-        st.stop()
-    model = CreeLearningModel()
-    model.load_model(model_path)
-    return model
+    """Load and cache the Cree learning model with error handling"""
+    try:
+        # Fixed path for cloud deployment
+        model_path = "models/cree_learning_model.pkl"  # Removed .. and __file__ usage
+        
+        if not os.path.exists(model_path):
+            st.error(f"❌ Model file not found at: {model_path}")
+            st.error(f"Current directory: {os.getcwd()}")
+            st.error(f"Available files: {os.listdir('.')}")
+            if os.path.exists('models'):
+                st.error(f"Files in models/: {os.listdir('models')}")
+            return None
+        
+        model = CreeLearningModel()
+        model.load_model(model_path)
+        return model
+    except Exception as e:
+        st.error(f"Error loading Cree model: {str(e)}")
+        return None
 
-# Audio processing functions
+# Audio processing functions with better error handling
 def load_audio(path, sample_rate=16000):
-    """Load and preprocess audio file"""
-    wav, sr = torchaudio.load(path)
-    if sr != sample_rate:
-        wav = torchaudio.functional.resample(wav, sr, sample_rate)
-    return wav.mean(dim=0).numpy(), sample_rate  # mono
+    """Load and preprocess audio file with error handling"""
+    try:
+        wav, sr = torchaudio.load(path)
+        if sr != sample_rate:
+            wav = torchaudio.functional.resample(wav, sr, sample_rate)
+        return wav.mean(dim=0).numpy(), sample_rate  # mono
+    except Exception as e:
+        st.error(f"Error loading audio file: {str(e)}")
+        return None, None
 
 def extract_whisper_embedding(audio_path, processor, model):
-    """Extract Whisper embeddings from audio file"""
-    audio, sr = load_audio(audio_path)
-    inputs = processor(audio, sampling_rate=sr, return_tensors="pt")
-    input_features = inputs.input_features.to(model.device)
-    
-    with torch.no_grad():
-        encoder_out = model.encoder(input_features)[0]
-    
-    return encoder_out.mean(dim=1).cpu().numpy().squeeze()
+    """Extract Whisper embeddings from audio file with error handling"""
+    try:
+        audio, sr = load_audio(audio_path)
+        if audio is None:
+            return None
+        
+        inputs = processor(audio, sampling_rate=sr, return_tensors="pt")
+        input_features = inputs.input_features.to(model.device)
+        
+        with torch.no_grad():
+            encoder_out = model.encoder(input_features)[0]
+        
+        return encoder_out.mean(dim=1).cpu().numpy().squeeze()
+    except Exception as e:
+        st.error(f"Error extracting embeddings: {str(e)}")
+        return None
 
 def query_audio(audio_path, knn_model, labels, paths, processor, model, top_k=3):
-    """Find similar audio files"""
-    query_emb = extract_whisper_embedding(audio_path, processor, model).reshape(1, -1)
-    distances, indices = knn_model.kneighbors(query_emb, n_neighbors=top_k)
-    
-    results = []
-    for i, idx in enumerate(indices[0]):
-        results.append({
-            'rank': i + 1,
-            'label': labels[idx],
-            'distance': distances[0][i],
-            'path': paths[idx]
-        })
-    
-    return results
+    """Find similar audio files with error handling"""
+    try:
+        query_emb = extract_whisper_embedding(audio_path, processor, model)
+        if query_emb is None:
+            return []
+        
+        query_emb = query_emb.reshape(1, -1)
+        distances, indices = knn_model.kneighbors(query_emb, n_neighbors=top_k)
+        
+        results = []
+        for i, idx in enumerate(indices[0]):
+            results.append({
+                'rank': i + 1,
+                'label': labels[idx],
+                'distance': distances[0][i],
+                'path': paths[idx]
+            })
+        
+        return results
+    except Exception as e:
+        st.error(f"Error querying audio: {str(e)}")
+        return []
 
 def get_audio_player_html(audio_path):
-    """Create HTML audio player"""
+    """Create HTML audio player with error handling"""
     try:
+        if not os.path.exists(audio_path):
+            return "<p>Audio file not found</p>"
+        
         with open(audio_path, "rb") as audio_file:
             audio_bytes = audio_file.read()
             audio_b64 = base64.b64encode(audio_bytes).decode()
@@ -128,13 +189,27 @@ def get_audio_player_html(audio_path):
         return f"<p>Error loading audio: {str(e)}</p>"
 
 def audio_learning_app():
-    """Audio Learning/Matching App"""
+    """Audio Learning/Matching App with better error handling"""
     st.header("🎵 Audio Matching")
     st.markdown("Upload an audio file to find similar audio clips from the trained dataset.")
+    
+    # Check if required files exist first
+    files_exist, missing_files = check_audio_files()
+    if not files_exist:
+        st.error("❌ Audio feature files are missing!")
+        st.error("Required files for audio matching:")
+        for file in missing_files:
+            st.error(f"• {file}")
+        st.info("Please ensure all model files are uploaded to your Streamlit Cloud repository in the correct directory structure.")
+        return
     
     # Load models and dataset
     with st.spinner("Loading models and dataset..."):
         processor, model, device = load_whisper_model()
+        if processor is None or model is None:
+            st.error("Failed to load Whisper model. Please check your internet connection and try again.")
+            return
+        
         features, labels, paths, knn_model = load_dataset()
     
     if features is None:
@@ -162,14 +237,12 @@ def audio_learning_app():
     # Audio Input Section
     st.subheader("🎙️ Input Audio")
     uploaded_file = st.file_uploader("Upload WAV or MP3", type=["wav", "mp3"])
-    audio_bytes = None
-    audio_filename = None
+    
     if uploaded_file:
         audio_bytes = uploaded_file.getvalue()
         audio_filename = uploaded_file.name
         st.audio(audio_bytes, format=f"audio/{audio_filename.split('.')[-1]}")
 
-    if audio_bytes and audio_filename:
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_filename.split('.')[-1]}") as tmp_file:
             tmp_file.write(audio_bytes)
             temp_path = tmp_file.name
@@ -183,6 +256,10 @@ def audio_learning_app():
             progress_bar.progress(30)
 
             results = query_audio(temp_path, knn_model, labels, paths, processor, model, top_k)
+
+            if not results:
+                st.error("Failed to process audio. Please try a different file.")
+                return
 
             progress_bar.progress(100)
             status.text("✅ Done!")
@@ -204,8 +281,11 @@ def audio_learning_app():
                             st.error("🔴 Less Similar")
                     with col2:
                         if os.path.exists(result['path']):
-                            with open(result['path'], 'rb') as f:
-                                st.audio(f.read(), format="audio/wav")
+                            try:
+                                with open(result['path'], 'rb') as f:
+                                    st.audio(f.read(), format="audio/wav")
+                            except Exception as e:
+                                st.error(f"Error playing audio: {str(e)}")
                         else:
                             st.error("Audio file not found")
 
@@ -217,18 +297,21 @@ def audio_learning_app():
             col3.metric("Best Similarity", f"{1 - min(distances):.3f}")
 
         except Exception as e:
-            st.error(f"❌ Error: {str(e)}")
+            st.error(f"❌ Error processing audio: {str(e)}")
 
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
 def text_learning_app():
-    """Text Learning App"""
+    """Text Learning App with better error handling"""
     st.header("📝 Cree Language Text Learning")
     
     # Load the model
     model = load_cree_model()
+    if model is None:
+        st.error("Failed to load the Cree learning model. Please check if the model file exists.")
+        return
     
     # Sidebar for text app
     with st.sidebar:
@@ -242,11 +325,14 @@ def text_learning_app():
         direction = st.radio("Translation Direction", ["Cree → English", "English → Cree"])
         input_word = st.text_input("Enter word:")
         if st.button("Translate"):
-            if direction == "Cree → English":
-                translations = model.find_translations(input_word)
-            else:
-                translations = model.find_cree_words(input_word)
-            st.write("### Translations:", translations or "No match found.")
+            try:
+                if direction == "Cree → English":
+                    translations = model.find_translations(input_word)
+                else:
+                    translations = model.find_cree_words(input_word)
+                st.write("### Translations:", translations or "No match found.")
+            except Exception as e:
+                st.error(f"Error during translation: {str(e)}")
 
     # --- Exercise Mode ---
     elif mode == "Exercise":
@@ -256,14 +342,18 @@ def text_learning_app():
 
         # --- Reset on restart or first time ---
         if "text_test_initialized" not in st.session_state or st.session_state.get("text_difficulty_mode") != difficulty:
-            st.session_state.text_test_questions = model.create_learning_exercises(difficulty=difficulty)[:10]
-            st.session_state.text_current_q = 0
-            st.session_state.text_submitted_answers = [None] * 10
-            st.session_state.text_correct_flags = [False] * 10
-            st.session_state.text_feedbacks = [""] * 10
-            st.session_state.text_finished = False
-            st.session_state.text_difficulty_mode = difficulty
-            st.session_state.text_test_initialized = True
+            try:
+                st.session_state.text_test_questions = model.create_learning_exercises(difficulty=difficulty)[:10]
+                st.session_state.text_current_q = 0
+                st.session_state.text_submitted_answers = [None] * 10
+                st.session_state.text_correct_flags = [False] * 10
+                st.session_state.text_feedbacks = [""] * 10
+                st.session_state.text_finished = False
+                st.session_state.text_difficulty_mode = difficulty
+                st.session_state.text_test_initialized = True
+            except Exception as e:
+                st.error(f"Error creating exercises: {str(e)}")
+                return
 
         q_idx = st.session_state.text_current_q
         question = st.session_state.text_test_questions[q_idx]
@@ -341,16 +431,19 @@ def text_learning_app():
     # --- Dataset Explorer ---
     elif mode == "Dataset Explorer":
         st.subheader("📚 Dataset Overview")
-        cree_words = list(model.cree_to_english.keys())
-        word_limit = st.slider("How many Cree words to show:", 5, 1000, 10)
-        data = [(w, ", ".join(model.cree_to_english[w])) for w in cree_words[:word_limit]]
-        df = pd.DataFrame(data, columns=["Cree Word", "English Meanings"])
-        st.dataframe(df)
+        try:
+            cree_words = list(model.cree_to_english.keys())
+            word_limit = st.slider("How many Cree words to show:", 5, 1000, 10)
+            data = [(w, ", ".join(model.cree_to_english[w])) for w in cree_words[:word_limit]]
+            df = pd.DataFrame(data, columns=["Cree Word", "English Meanings"])
+            st.dataframe(df)
 
-        st.write("---")
-        st.write(f"Total Cree words: {len(model.cree_to_english)}")
-        st.write(f"Cree words with multiple meanings: {sum(1 for v in model.cree_to_english.values() if len(v) > 1)}")
-        st.write(f"Average meanings per Cree word: {np.mean([len(v) for v in model.cree_to_english.values()]):.2f}")
+            st.write("---")
+            st.write(f"Total Cree words: {len(model.cree_to_english)}")
+            st.write(f"Cree words with multiple meanings: {sum(1 for v in model.cree_to_english.values() if len(v) > 1)}")
+            st.write(f"Average meanings per Cree word: {np.mean([len(v) for v in model.cree_to_english.values()]):.2f}")
+        except Exception as e:
+            st.error(f"Error exploring dataset: {str(e)}")
 
 def main():
     """Main app with navigation"""
@@ -364,8 +457,8 @@ def main():
             st.session_state.current_tab = "text"
     
     with col2:
-        if st.button("🎵 Audio", use_container_width=True, type="primary" if st.session_state.get('current_tab', 'text') == 'learning' else "secondary"):
-            st.session_state.current_tab = "learning"
+        if st.button("🎵 Audio", use_container_width=True, type="primary" if st.session_state.get('current_tab', 'text') == 'audio' else "secondary"):
+            st.session_state.current_tab = "audio"
     
     # Initialize session state if not exists
     if 'current_tab' not in st.session_state:
@@ -377,7 +470,7 @@ def main():
     # Display the selected app based on the current tab
     if st.session_state.current_tab == "text":
         text_learning_app()
-    elif st.session_state.current_tab == "learning":
+    elif st.session_state.current_tab == "audio":
         audio_learning_app()
     
     # Footer
