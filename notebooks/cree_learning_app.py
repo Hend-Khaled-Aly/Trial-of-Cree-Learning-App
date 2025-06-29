@@ -386,14 +386,17 @@ def audio_learning_app():
                             else:
                                 st.error("🔴 Less Similar")
                         with col2:
-                            if os.path.exists(result['path']):
+                            AUDIO_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "wav"))
+                            audio_filename = os.path.basename(result['path'])
+                            audio_file_path = os.path.join(AUDIO_BASE_DIR, audio_filename)
+                            if os.path.exists(audio_file_path):
                                 try:
-                                    with open(result['path'], 'rb') as f:
+                                    with open(audio_file_path, 'rb') as f:
                                         st.audio(f.read(), format="audio/wav")
                                 except Exception as e:
                                     st.error(f"Error playing audio: {str(e)}")
                             else:
-                                st.error("Audio file not found")
+                                st.error("Audio file not found: {audio_file_path}")
 
                 st.subheader("📊 Summary")
                 distances = [r["distance"] for r in results]
