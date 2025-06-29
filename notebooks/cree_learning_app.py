@@ -62,8 +62,13 @@ def load_dataset():
 @st.cache_resource
 def load_cree_model():
     """Load and cache the Cree learning model"""
+    current_dir = os.path.dirname(__file__)
+    model_path = os.path.join(current_dir, "..", "models", "cree_learning_model.pkl")
+    if not os.path.exists(model_path):
+        st.error(f"❌ Model file not found at: {model_path}")
+        st.stop()
     model = CreeLearningModel()
-    model.load_model("../models/cree_learning_model.pkl")
+    model.load_model(model_path)
     return model
 
 # Audio processing functions
