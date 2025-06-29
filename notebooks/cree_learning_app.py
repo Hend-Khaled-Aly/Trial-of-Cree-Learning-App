@@ -1,6 +1,6 @@
 import streamlit as st
 import torch
-import torchaudio
+import soundfile as sf
 import numpy as np
 import json
 import joblib
@@ -157,19 +157,25 @@ def convert_mp3_to_wav_browser(uploaded_file):
         return None
 
 def load_audio(path, sample_rate=16000):
-    """Load and preprocess audio file with error handling"""
+    """Load and preprocess audio file with soundfile instead of torchaudio"""
     try:
-        # For MP3 files, try conversion first
-        if path.lower().endswith('.mp3'):
-            st.info("🔄 Converting MP3 to WAV format...")
-            # This won't work directly, we need to handle this in the upload section
-            pass
-        
-        # Try loading with torchaudio
-        wav, sr = torchaudio.load(path)
+        # Use soundfile to load WAV
+        audio, sr = sf.read(path)
+
+        # Ensure mono (average across channels if stereo)
+        if len(audio.shape) == 2:
+            audio = audio.mean(axis=1)
+
+        # Resample if needed
         if sr != sample_rate:
-            wav = torchaudio.functional.resample(wav, sr, sample_rate)
-        return wav.mean(dim=0).numpy(), sample_rate  # mono
+            import librosa  # only if not already installed
+            audio = librosa.resample(audio, orig_sr=sr, target_sr=sample_rate)
+            sr = sample_rate
+
+        return audio, sr
+    except Exception as e:
+        st.error(f"Error loading audio file: {str(e)}")
+        return None, None
         
     except Exception as e:
         st.error(f"Error loading audio file: {str(e)}")
@@ -298,12 +304,10 @@ def audio_learning_app():
     st.subheader("🎙️ Input Audio")
     
     # Add format information
-    with st.expander("📋 Supported Audio Formats"):
-        st.write("**✅ Fully supported:** WAV files")
-        st.write("**⚠️ Limited support:** MP3 files (requires conversion)")
+    with st.expander("📋 Supported Audio Format: WAV files"):
         st.write("**📏 Recommended:** 2-30 seconds, 16kHz sample rate")
     
-    uploaded_file = st.file_uploader("Upload Audio File", type=["wav", "mp3"])
+    uploaded_file = st.file_uploader("Upload Audio File", type=["wav"])
     
     if uploaded_file:
         audio_bytes = uploaded_file.getvalue()
