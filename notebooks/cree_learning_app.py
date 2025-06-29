@@ -13,6 +13,9 @@ import pickle
 from transformers import WhisperProcessor, WhisperModel
 from sklearn.neighbors import NearestNeighbors
 from cree_learning_model import CreeLearningModel
+import librosa
+from pydub import AudioSegment
+import io
 
 # Set page config
 st.set_page_config(
@@ -112,15 +115,56 @@ def load_cree_model():
 
 # Audio processing functions with better error handling
 def load_audio(path, sample_rate=16000):
-    """Load and preprocess audio file with error handling"""
+    """Load and preprocess audio file with error handling and multiple backends"""
     try:
+        # First try with torchaudio
         wav, sr = torchaudio.load(path)
         if sr != sample_rate:
             wav = torchaudio.functional.resample(wav, sr, sample_rate)
         return wav.mean(dim=0).numpy(), sample_rate  # mono
-    except Exception as e:
-        st.error(f"Error loading audio file: {str(e)}")
-        return None, None
+    except Exception as e1:
+        try:
+            # Fallback: Try converting with librosa if available
+            wav, sr = librosa.load(path, sr=sample_rate, mono=True)
+            return wav, sample_rate
+        except Exception as e2:
+            try:
+                # Fallback: Try with pydub for MP3 files
+                
+                # Load with pydub
+                if path.lower().endswith('.mp3'):
+                    audio = AudioSegment.from_mp3(path)
+                else:
+                    audio = AudioSegment.from_wav(path)
+                
+                # Convert to wav format in memory
+                wav_buffer = io.BytesIO()
+                audio.set_frame_rate(sample_rate).set_channels(1).export(wav_buffer, format="wav")
+                wav_buffer.seek(0)
+                
+                # Save to temporary wav file and load with torchaudio
+                import tempfile
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_wav:
+                    tmp_wav.write(wav_buffer.getvalue())
+                    tmp_wav_path = tmp_wav.name
+                
+                try:
+                    wav, sr = torchaudio.load(tmp_wav_path)
+                    os.unlink(tmp_wav_path)  # Clean up temp file
+                    if sr != sample_rate:
+                        wav = torchaudio.functional.resample(wav, sr, sample_rate)
+                    return wav.mean(dim=0).numpy(), sample_rate
+                except Exception as e3:
+                    if os.path.exists(tmp_wav_path):
+                        os.unlink(tmp_wav_path)
+                    raise e3
+                    
+            except Exception as e3:
+                st.error(f"Error loading audio file with all backends:")
+                st.error(f"- torchaudio: {str(e1)}")
+                st.error(f"- librosa: {str(e2)}")
+                st.error(f"- pydub: {str(e3)}")
+                return None, None
 
 def extract_whisper_embedding(audio_path, processor, model):
     """Extract Whisper embeddings from audio file with error handling"""
@@ -236,14 +280,22 @@ def audio_learning_app():
     
     # Audio Input Section
     st.subheader("🎙️ Input Audio")
+    st.info("💡 **Tip**: WAV files work best. MP3 files may require additional processing.")
     uploaded_file = st.file_uploader("Upload WAV or MP3", type=["wav", "mp3"])
     
     if uploaded_file:
         audio_bytes = uploaded_file.getvalue()
         audio_filename = uploaded_file.name
+        
+        # Show file info
+        st.write(f"📁 **File**: {audio_filename}")
+        st.write(f"📏 **Size**: {len(audio_bytes)} bytes")
+        
         st.audio(audio_bytes, format=f"audio/{audio_filename.split('.')[-1]}")
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{audio_filename.split('.')[-1]}") as tmp_file:
+        # Create temporary file with proper extension
+        file_extension = audio_filename.split('.')[-1].lower()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
             tmp_file.write(audio_bytes)
             temp_path = tmp_file.name
 
@@ -259,6 +311,10 @@ def audio_learning_app():
 
             if not results:
                 st.error("Failed to process audio. Please try a different file.")
+                st.info("**Troubleshooting tips:**")
+                st.info("• Try using a WAV file instead of MP3")
+                st.info("• Ensure the audio file is not corrupted")
+                st.info("• Try a shorter audio clip (< 30 seconds)")
                 return
 
             progress_bar.progress(100)
@@ -298,6 +354,10 @@ def audio_learning_app():
 
         except Exception as e:
             st.error(f"❌ Error processing audio: {str(e)}")
+            st.info("**Debug Information:**")
+            st.info(f"• File extension: {file_extension}")
+            st.info(f"• Temp file path: {temp_path}")
+            st.info(f"• File exists: {os.path.exists(temp_path)}")
 
         finally:
             if os.path.exists(temp_path):
