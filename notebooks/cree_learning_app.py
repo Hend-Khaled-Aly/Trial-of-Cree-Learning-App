@@ -13,6 +13,7 @@ import pickle
 from transformers import WhisperProcessor, WhisperModel
 from sklearn.neighbors import NearestNeighbors
 from cree_learning_model import CreeLearningModel
+from scipy.signal import resample
 
 # Set page config
 st.set_page_config(
@@ -168,25 +169,14 @@ def load_audio(path, sample_rate=16000):
 
         # Resample if needed
         if sr != sample_rate:
-            import librosa  # only if not already installed
-            audio = librosa.resample(audio, orig_sr=sr, target_sr=sample_rate)
-            sr = sample_rate
+            num_samples = int(len(audio) * float(sample_rate) / sr)
+            audio = resample(audio, num_samples)
 
-        return audio, sr
+        return audio, sample_rate
     except Exception as e:
         st.error(f"Error loading audio file: {str(e)}")
         return None, None
         
-    except Exception as e:
-        st.error(f"Error loading audio file: {str(e)}")
-        
-        # Try to provide more specific error information
-        if "backend" in str(e).lower():
-            st.error("🔧 **Audio Backend Issue**: The cloud environment doesn't support this audio format.")
-            st.info("💡 **Solution**: Please convert your MP3 to WAV format before uploading.")
-            st.info("🛠️ **How to convert**: Use online converters like CloudConvert, or audio software like Audacity.")
-        
-        return None, None
 
 def extract_whisper_embedding(audio_path, processor, model):
     """Extract Whisper embeddings from audio file with error handling"""
