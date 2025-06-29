@@ -1,13 +1,10 @@
-torchaudio==2.7.0
-audioread==3.0.1
-streamlit-audiorecorder==0.0.6
-streamlit-webrtc==0.63.1
 streamlit
 torch
+transformers
 torchaudio
 numpy
 pandas
+soundfile
+librosa
 scikit-learn
-matplotlib
-transformers
 joblib
