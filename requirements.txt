@@ -8,3 +8,4 @@ scikit-learn
 joblib
 soundfile
 scipy
+matplotlib
