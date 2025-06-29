@@ -47,8 +47,8 @@ def load_whisper_model():
     """Load and cache the Whisper model with error handling"""
     try:
         # Use smaller model for cloud deployment to reduce memory usage
-        # model_name = "openai/whisper-small" 
-        model_name = "openai/whisper-large-v3"
+        model_name = "openai/whisper-small" 
+        # model_name = "openai/whisper-large-v3"
         processor = WhisperProcessor.from_pretrained(model_name)
         model = WhisperModel.from_pretrained(model_name)
         model.eval()
