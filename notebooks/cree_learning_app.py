@@ -142,7 +142,7 @@ def load_cree_model():
     """Load and cache the Cree learning model with error handling"""
     try:
         # Fixed path for cloud deployment
-        model_path = "models/cree_learning_model.pkl"  # Removed .. and __file__ usage
+        model_path = "models/cree_learning_model.pkl" 
         
         if not os.path.exists(model_path):
             st.error(f"❌ Model file not found at: {model_path}")
@@ -159,51 +159,6 @@ def load_cree_model():
         st.error(f"Error loading Cree model: {str(e)}")
         return None
 
-# Audio processing functions with better error handling
-def convert_mp3_to_wav_browser(uploaded_file):
-    """Convert MP3 to WAV using browser-compatible method"""
-    try:
-        # Use streamlit's built-in audio processing
-        audio_bytes = uploaded_file.getvalue()
-        
-        # Create a temporary MP3 file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp_mp3:
-            tmp_mp3.write(audio_bytes)
-            tmp_mp3_path = tmp_mp3.name
-        
-        # Try to use ffmpeg if available (common in cloud environments)
-        try:
-            import subprocess
-            wav_path = tmp_mp3_path.replace('.mp3', '.wav')
-            
-            # Use ffmpeg to convert MP3 to WAV
-            cmd = [
-                'ffmpeg', '-i', tmp_mp3_path, 
-                '-ar', '16000',  # 16kHz sample rate
-                '-ac', '1',      # mono
-                '-f', 'wav',     # WAV format
-                wav_path, '-y'   # overwrite output
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            
-            if result.returncode == 0 and os.path.exists(wav_path):
-                # Clean up MP3 file
-                os.unlink(tmp_mp3_path)
-                return wav_path
-            else:
-                st.error(f"FFmpeg conversion failed: {result.stderr}")
-                os.unlink(tmp_mp3_path)
-                return None
-                
-        except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-            os.unlink(tmp_mp3_path)
-            st.error(f"FFmpeg not available: {str(e)}")
-            return None
-            
-    except Exception as e:
-        st.error(f"Error in MP3 conversion: {str(e)}")
-        return None
 
 def load_audio(path, sample_rate=16000):
     """Load and preprocess audio file with soundfile instead of torchaudio"""
@@ -481,9 +436,49 @@ def simple_audio_recorder():
     st.info("💡 This tool runs fully in-browser. No server-side audio is saved or uploaded.")
 
 
+def audio_listening_page():
+    st.header("🎧 Listen to Cree Audio Dataset")
+
+    AUDIO_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "wav"))
+
+    if not os.path.exists(AUDIO_DIR):
+        st.error(f"Audio folder not found at: {AUDIO_DIR}")
+        return
+
+    files = [f for f in os.listdir(AUDIO_DIR) if f.endswith((".wav", ".mp3"))]
+
+    if not files:
+        st.info("No audio files found in the dataset.")
+        return
+
+    # Optional search bar
+    search_query = st.text_input("🔍 Search audio by name")
+    if search_query:
+        files = [f for f in files if search_query.lower() in f.lower()]
+
+    st.markdown(f"### 🎵 {len(files)} audio files found")
+
+    for fname in sorted(files):
+        filepath = os.path.join(AUDIO_DIR, fname)
+        with open(filepath, "rb") as f:
+            audio_bytes = f.read()
+        with st.expander(f"🔊 {fname}"):
+            st.audio(audio_bytes, format="audio/wav" if fname.endswith("wav") else "audio/mp3")
+
+
 
 def audio_learning_app():
     """Audio Learning/Matching App with recording capability"""
+    # Sidebar for audio page selection
+    with st.sidebar:
+        st.header("Audio Options")
+        selected_audio_page = st.radio("Choose a view:", ["🎧 Listen to Dataset", "🎙️ Match Audio"])
+
+    # Render based on user selection
+    if selected_audio_page == "🎧 Listen to Dataset":
+        audio_listening_page()
+        return  # Exit to avoid loading models, etc.
+
     st.header("🎵 Audio Matching")
     st.markdown("Upload an audio file or record audio to find similar audio clips from the trained dataset.")
     
@@ -560,15 +555,9 @@ def audio_learning_app():
             audio_source = uploaded_file
     
     with tab2:
-        if WEBRTC_AVAILABLE:
-            recorded_path = audio_recorder_component()
-            if recorded_path:
-                audio_source = recorded_path
-                use_recorded = True
-        else:
-            # Use simple HTML5 recorder as fallback
-            simple_audio_recorder()
-            st.info("🎙️ Use the recorder above to record audio, then upload the downloaded file in the 'Upload File' tab.")
+        # Use simple HTML5 recorder
+        simple_audio_recorder()
+        st.info("🎙️ Use the recorder above to record audio, then upload the downloaded file in the 'Upload File' tab.")
     
     # Process audio if available
     if audio_source:
@@ -588,26 +577,19 @@ def audio_learning_app():
                     conversion_needed = file_extension == 'mp3'
                     
                     if conversion_needed:
-                        st.info("🔄 MP3 detected. Attempting conversion...")
-                        
-                        # Try FFmpeg conversion
-                        converted_path = convert_mp3_to_wav_browser(audio_source)
-                        if converted_path:
-                            temp_path = converted_path
-                            st.success("✅ Successfully converted MP3 to WAV!")
-                        else:
-                            st.error("❌ MP3 conversion failed.")
-                            st.markdown("""
-                            **🛠️ Manual Conversion Required:**
+                        st.info("🔄 MP3 detected, converting to WAV...")
+                        st.error("❌ MP3 conversion failed.")
+                        st.markdown("""
+                        **🛠️ Manual Conversion Required:**
                             
-                            1. **Online Converters**: Use [CloudConvert](https://cloudconvert.com/mp3-to-wav) or [Online-Convert](https://audio.online-convert.com/convert-to-wav)
-                            2. **Desktop Software**: Use Audacity (free) or other audio editors
-                            3. **Settings**: Convert to WAV, 16kHz sample rate, mono channel
+                        1. **Online Converters**: Use [CloudConvert](https://cloudconvert.com/mp3-to-wav) or [Online-Convert](https://audio.online-convert.com/convert-to-wav)
+                        2. **Desktop Software**: Use Audacity (free) or other audio editors
+                        3. **Settings**: Convert to WAV, 16kHz sample rate, mono channel
                             
-                            **Or try this quick fix:**
-                            - Record your audio again and save as WAV format
-                            """)
-                            return
+                        **Or try this quick fix:**
+                        - Record your audio again and save as WAV format
+                        """)
+                        return
                     else:
                         # Create temporary file for WAV
                         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
