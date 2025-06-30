@@ -17,6 +17,7 @@ from scipy.signal import resample
 import io
 import wave
 import streamlit.components.v1 as components
+from pathlib import Path
 
 WEBRTC_AVAILABLE = False
 
@@ -445,26 +446,36 @@ def audio_listening_page():
         st.error(f"Audio folder not found at: {AUDIO_DIR}")
         return
 
-    files = [f for f in os.listdir(AUDIO_DIR) if f.endswith((".wav", ".mp3"))]
+    files = [f for f in os.listdir(AUDIO_DIR) if f.endswith((".wav"))]
+    total_files = len(files)
 
-    if not files:
+    if total_files == 0:
         st.info("No audio files found in the dataset.")
         return
 
     # Optional search bar
-    search_query = st.text_input("🔍 Search audio by name")
+    search_query = st.text_input("🔍 Search Words")
     if search_query:
         files = [f for f in files if search_query.lower() in f.lower()]
 
-    st.markdown(f"### 🎵 {len(files)} audio files found")
+    st.markdown(f"### 🎵 {total_files} audio files found")
 
+    # Sort and display each word with a speaker icon
     for fname in sorted(files):
+        # Convert filename to word (remove extension, replace underscores)
+        word = Path(fname).stem.replace("_", " ")
         filepath = os.path.join(AUDIO_DIR, fname)
+
         with open(filepath, "rb") as f:
             audio_bytes = f.read()
-        with st.expander(f"🔊 {fname}"):
-            st.audio(audio_bytes, format="audio/wav" if fname.endswith("wav") else "audio/mp3")
 
+        cols = st.columns([3, 1])
+        with cols[0]:
+            st.markdown(f"**{word}**")
+
+        with cols[1]:
+            if st.button("🔊", key=f"play_{fname}"):
+                st.audio(audio_bytes, format="audio/wav" if fname.endswith("wav") else "audio/mp3")
 
 
 def audio_learning_app():
