@@ -330,215 +330,157 @@ def get_audio_player_html(audio_path):
     except Exception as e:
         return f"<p>Error loading audio: {str(e)}</p>"
 
-# Add this function after the existing functions and before audio_learning_app()
+
 def simple_audio_recorder():
-    st.subheader("🎙️ Record Audio and Download Real WAV")
+    st.subheader("🎙️ Record Audio and Download WAV")
 
     components.html("""
-    <div style="padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
-        <button onclick="startRecording()">🔴 Start</button>
-        <button onclick="stopRecording()" disabled id="stopBtn">⏹️ Stop</button>
-        <p id="status"></p>
-        <audio id="audioPlayback" controls style="display:none; margin-top: 10px;"></audio>
-        <a id="downloadLink" style="display:none;" download="recording.wav">💾 Download WAV</a>
+    <style>
+        .recorder-container {
+            padding: 20px;
+            border: 2px dashed #ccc;
+            border-radius: 12px;
+            background-color: #f9f9f9;
+            text-align: center;
+        }
+        .recorder-button {
+            font-size: 16px;
+            padding: 10px 20px;
+            margin: 5px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+        .start-btn { background-color: #f44336; color: white; }
+        .stop-btn { background-color: #2196F3; color: white; }
+        .download-link {
+            display: inline-block;
+            margin-top: 15px;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+    </style>
+
+    <div class="recorder-container">
+        <button class="recorder-button start-btn" onclick="startRecording()">🔴 Start Recording</button>
+        <button class="recorder-button stop-btn" onclick="stopRecording()" id="stopBtn" disabled>⏹️ Stop</button>
+        <p id="statusText">Click start to begin recording...</p>
+        <audio id="audioPlayback" controls style="display:none; margin-top: 15px;"></audio>
+        <br/>
+        <a id="downloadLink" class="download-link" style="display:none;" download="recording.wav">💾 Download Recording</a>
     </div>
 
     <script>
-    let audioContext;
-    let mediaStream;
-    let mediaRecorder;
-    let audioData = [];
+        let audioContext;
+        let mediaStream;
+        let processor;
+        let source;
+        let audioData = [];
 
-    function startRecording() {
-        document.getElementById("status").innerText = "Recording...";
-        document.getElementById("stopBtn").disabled = false;
+        function startRecording() {
+            document.getElementById("statusText").innerText = "🎙️ Recording...";
+            document.getElementById("stopBtn").disabled = false;
+            audioData = [];
 
-        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-            audioContext = new AudioContext({ sampleRate: 16000 });
-            mediaStream = stream;
-            const source = audioContext.createMediaStreamSource(stream);
-            const processor = audioContext.createScriptProcessor(4096, 1, 1);
+            navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+                audioContext = new AudioContext({ sampleRate: 16000 });
+                mediaStream = stream;
+                source = audioContext.createMediaStreamSource(stream);
+                processor = audioContext.createScriptProcessor(4096, 1, 1);
 
-            source.connect(processor);
-            processor.connect(audioContext.destination);
+                source.connect(processor);
+                processor.connect(audioContext.destination);
 
-            processor.onaudioprocess = e => {
-                const input = e.inputBuffer.getChannelData(0);
-                audioData.push(new Float32Array(input));
-            };
-
-            window.stopRecording = () => {
-                processor.disconnect();
-                source.disconnect();
-                mediaStream.getTracks().forEach(track => track.stop());
-
-                const merged = flattenArray(audioData);
-                const wavBlob = encodeWAV(merged, 16000);
-                const url = URL.createObjectURL(wavBlob);
-
-                const audio = document.getElementById("audioPlayback");
-                audio.src = url;
-                audio.style.display = "block";
-                audio.load();
-
-                const link = document.getElementById("downloadLink");
-                link.href = url;
-                link.style.display = "inline-block";
-
-                document.getElementById("status").innerText = "✅ Recording complete!";
-                document.getElementById("stopBtn").disabled = true;
-            };
-        });
-    }
-
-    function flattenArray(channelData) {
-        let length = 0;
-        for (let i = 0; i < channelData.length; i++) {
-            length += channelData[i].length;
+                processor.onaudioprocess = e => {
+                    const input = e.inputBuffer.getChannelData(0);
+                    audioData.push(new Float32Array(input));
+                };
+            });
         }
-        const result = new Float32Array(length);
-        let offset = 0;
-        for (let i = 0; i < channelData.length; i++) {
-            result.set(channelData[i], offset);
-            offset += channelData[i].length;
+
+        function stopRecording() {
+            document.getElementById("stopBtn").disabled = true;
+            processor.disconnect();
+            source.disconnect();
+            mediaStream.getTracks().forEach(track => track.stop());
+
+            const flatData = flattenArray(audioData);
+            const wavBlob = encodeWAV(flatData, 16000);
+            const url = URL.createObjectURL(wavBlob);
+
+            const audioEl = document.getElementById("audioPlayback");
+            audioEl.src = url;
+            audioEl.style.display = "block";
+            audioEl.load();
+
+            const link = document.getElementById("downloadLink");
+            link.href = url;
+            link.style.display = "inline-block";
+
+            document.getElementById("statusText").innerText = "✅ Recording complete!";
         }
-        return result;
-    }
 
-    function encodeWAV(samples, sampleRate) {
-        const buffer = new ArrayBuffer(44 + samples.length * 2);
-        const view = new DataView(buffer);
-
-        function writeString(view, offset, string) {
-            for (let i = 0; i < string.length; i++) {
-                view.setUint8(offset + i, string.charCodeAt(i));
+        function flattenArray(chunks) {
+            let length = chunks.reduce((sum, arr) => sum + arr.length, 0);
+            let result = new Float32Array(length);
+            let offset = 0;
+            for (let chunk of chunks) {
+                result.set(chunk, offset);
+                offset += chunk.length;
             }
+            return result;
         }
 
-        function floatTo16BitPCM(output, offset, input) {
-            for (let i = 0; i < input.length; i++, offset += 2) {
-                const s = Math.max(-1, Math.min(1, input[i]));
-                output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+        function encodeWAV(samples, sampleRate) {
+            const buffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(buffer);
+
+            function writeString(view, offset, string) {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
             }
+
+            function floatTo16BitPCM(output, offset, input) {
+                for (let i = 0; i < input.length; i++, offset += 2) {
+                    const s = Math.max(-1, Math.min(1, input[i]));
+                    output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+                }
+            }
+
+            writeString(view, 0, "RIFF");
+            view.setUint32(4, 36 + samples.length * 2, true);
+            writeString(view, 8, "WAVE");
+            writeString(view, 12, "fmt ");
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true);
+            view.setUint16(32, 2, true);
+            view.setUint16(34, 16, true);
+            writeString(view, 36, "data");
+            view.setUint32(40, samples.length * 2, true);
+
+            floatTo16BitPCM(view, 44, samples);
+
+            return new Blob([view], { type: "audio/wav" });
         }
-
-        writeString(view, 0, "RIFF");
-        view.setUint32(4, 36 + samples.length * 2, true);
-        writeString(view, 8, "WAVE");
-        writeString(view, 12, "fmt ");
-        view.setUint32(16, 16, true); // Subchunk1Size
-        view.setUint16(20, 1, true);  // PCM
-        view.setUint16(22, 1, true);  // Channels
-        view.setUint32(24, sampleRate, true);
-        view.setUint32(28, sampleRate * 2, true); // ByteRate
-        view.setUint16(32, 2, true); // BlockAlign
-        view.setUint16(34, 16, true); // BitsPerSample
-        writeString(view, 36, "data");
-        view.setUint32(40, samples.length * 2, true);
-
-        floatTo16BitPCM(view, 44, samples);
-
-        return new Blob([view], { type: "audio/wav" });
-    }
     </script>
-    """, height=300)
+    """, height=380)
 
     st.markdown("""
-    **📋 Instructions:**
+    ### 📋 Instructions
     1. Click **Start Recording** and allow microphone access
-    2. Speak clearly into your microphone
-    3. Click **Stop Recording** when finished
-    4. Click **Play** to review your recording
-    5. Click **Download WAV** to save the file
-    6. Upload the downloaded file using the "Upload File" tab above
+    2. Speak into your microphone
+    3. Click **Stop** when done
+    4. Play back or **Download WAV**
+    5. Upload the WAV file in the next section
     """)
-    
-    st.info("💡 **Note:** This recorder saves files to your device. After recording, download the WAV file and upload it using the file upload feature above.")
-    
-    return None
-    """Audio recorder component using streamlit-webrtc"""
-    if not WEBRTC_AVAILABLE:
-        st.error("❌ Audio recording not available. Please install streamlit-webrtc.")
-        return None
-    
-    st.subheader("🎙️ Record Audio")
-    
-    # Initialize recorder
-    if 'audio_recorder' not in st.session_state:
-        st.session_state.audio_recorder = AudioRecorder()
-    
-    # WebRTC configuration for better compatibility
-    rtc_configuration = RTCConfiguration(
-        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-    )
-    
-    # Recording controls
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        if st.button("🔴 Start Recording", key="start_rec"):
-            st.session_state.audio_recorder.clear()
-            st.session_state.recording = True
-    
-    with col2:
-        if st.button("⏹️ Stop Recording", key="stop_rec"):
-            st.session_state.recording = False
-    
-    with col3:
-        if st.button("🗑️ Clear Recording", key="clear_rec"):
-            st.session_state.audio_recorder.clear()
-            st.session_state.recorded_audio = None
-            if 'recording' in st.session_state:
-                del st.session_state.recording
-    
-    # WebRTC streamer for audio recording
-    if st.session_state.get('recording', False):
-        st.info("🎙️ Recording... Click 'Stop Recording' when done.")
-        
-        def audio_frame_callback(frame):
-            st.session_state.audio_recorder.process_audio_frame(frame)
-            return frame
-        
-        webrtc_ctx = webrtc_streamer(
-            key="audio-recorder",
-            mode=WebRtcMode.SENDONLY,
-            audio_frame_callback=audio_frame_callback,
-            rtc_configuration=rtc_configuration,
-            media_stream_constraints={
-                "video": False,
-                "audio": {
-                    "sampleRate": 16000,
-                    "channelCount": 1,
-                    "echoCancellation": True,
-                    "noiseSuppression": True,
-                    "autoGainControl": True,
-                },
-            },
-        )
-        
-        if not webrtc_ctx.state.playing:
-            st.session_state.recording = False
-    
-    # Show recorded audio if available
-    audio_data = st.session_state.audio_recorder.get_audio_data()
-    if audio_data is not None and len(audio_data) > 0:
-        st.success(f"✅ Audio recorded! Duration: {len(audio_data) / 16000:.1f} seconds")
-        
-        # Create temporary file for playback
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-            sf.write(tmp_file.name, audio_data, 16000)
-            
-            # Play recorded audio
-            with open(tmp_file.name, "rb") as audio_file:
-                audio_bytes = audio_file.read()
-                st.audio(audio_bytes, format="audio/wav")
-            
-            # Store the recorded audio path
-            st.session_state.recorded_audio = tmp_file.name
-            
-            return tmp_file.name
-    
-    return None
+
+    st.info("💡 This tool runs fully in-browser. No server-side audio is saved or uploaded.")
+
+
 
 def audio_learning_app():
     """Audio Learning/Matching App with recording capability"""
