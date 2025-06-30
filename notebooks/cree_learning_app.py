@@ -16,17 +16,10 @@ from cree_learning_model import CreeLearningModel
 from scipy.signal import resample
 import io
 import wave
-
-# Audio recorder imports
-try:
-    from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-    import av
-    WEBRTC_AVAILABLE = True
-except ImportError:
-    WEBRTC_AVAILABLE = False
-
-# Add streamlit components import
 import streamlit.components.v1 as components
+
+WEBRTC_AVAILABLE = False
+
 
 # Set page config
 st.set_page_config(
@@ -36,7 +29,7 @@ st.set_page_config(
 )
 
 # Constants for audio app - Fixed paths for cloud deployment
-MODELS_DIR = "models/audio"  # Relative path without ../
+MODELS_DIR = "models/audio"
 FEATURES_PATH = os.path.join(MODELS_DIR, "features.npy")
 KNN_MODEL_PATH = os.path.join(MODELS_DIR, "knn_model.pkl")
 LABELS_PATH = os.path.join(MODELS_DIR, "labels.json")
@@ -339,108 +332,117 @@ def get_audio_player_html(audio_path):
 
 # Add this function after the existing functions and before audio_learning_app()
 def simple_audio_recorder():
-    """Simple HTML5 audio recorder using JavaScript"""
-    st.subheader("🎙️ Record Audio")
-    
-    # HTML and JavaScript for audio recording
-    audio_recorder_html = """
-    <div style="padding: 20px; border: 1px solid #ddd; border-radius: 10px; background-color: #f9f9f9;">
-        <h4>🎙️ Browser Audio Recorder</h4>
-        <div style="margin: 10px 0;">
-            <button id="startBtn" onclick="startRecording()" style="background-color: #ff4444; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin: 5px; cursor: pointer;">🔴 Start Recording</button>
-            <button id="stopBtn" onclick="stopRecording()" disabled style="background-color: #444444; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin: 5px; cursor: pointer;">⏹️ Stop Recording</button>
-            <button id="playBtn" onclick="playRecording()" disabled style="background-color: #44aa44; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin: 5px; cursor: pointer;">▶️ Play</button>
-        </div>
-        <div id="status" style="margin: 10px 0; font-weight: bold; color: #666;"></div>
-        <audio id="audioPlayback" controls style="width: 100%; margin: 10px 0; display: none;"></audio>
-        <div style="margin: 10px 0;">
-            <button id="downloadBtn" onclick="downloadRecording()" disabled style="background-color: #0066cc; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">💾 Download WAV</button>
-        </div>
+    st.subheader("🎙️ Record Audio and Download Real WAV")
+
+    components.html("""
+    <div style="padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+        <button onclick="startRecording()">🔴 Start</button>
+        <button onclick="stopRecording()" disabled id="stopBtn">⏹️ Stop</button>
+        <p id="status"></p>
+        <audio id="audioPlayback" controls style="display:none; margin-top: 10px;"></audio>
+        <a id="downloadLink" style="display:none;" download="recording.wav">💾 Download WAV</a>
     </div>
 
     <script>
+    let audioContext;
+    let mediaStream;
     let mediaRecorder;
-    let recordedChunks = [];
-    let audioBlob;
+    let audioData = [];
 
-    async function startRecording() {
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                audio: {
-                    sampleRate: 16000,
-                    channelCount: 1,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true
-                } 
-            });
-            
-            recordedChunks = [];
-            mediaRecorder = new MediaRecorder(stream);
-            
-            mediaRecorder.ondataavailable = function(event) {
-                if (event.data.size > 0) {
-                    recordedChunks.push(event.data);
-                }
+    function startRecording() {
+        document.getElementById("status").innerText = "Recording...";
+        document.getElementById("stopBtn").disabled = false;
+
+        navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+            audioContext = new AudioContext({ sampleRate: 16000 });
+            mediaStream = stream;
+            const source = audioContext.createMediaStreamSource(stream);
+            const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+            source.connect(processor);
+            processor.connect(audioContext.destination);
+
+            processor.onaudioprocess = e => {
+                const input = e.inputBuffer.getChannelData(0);
+                audioData.push(new Float32Array(input));
             };
-            
-            mediaRecorder.onstop = function() {
-                audioBlob = new Blob(recordedChunks, { type: 'audio/wav' });
-                const audioUrl = URL.createObjectURL(audioBlob);
-                document.getElementById('audioPlayback').src = audioUrl;
-                document.getElementById('audioPlayback').style.display = 'block';
-                document.getElementById('playBtn').disabled = false;
-                document.getElementById('downloadBtn').disabled = false;
-                document.getElementById('status').innerHTML = '✅ Recording completed! Duration: ' + 
-                    Math.round(audioBlob.size / 16000) + ' seconds (approx)';
-                
-                // Clean up the stream
-                stream.getTracks().forEach(track => track.stop());
+
+            window.stopRecording = () => {
+                processor.disconnect();
+                source.disconnect();
+                mediaStream.getTracks().forEach(track => track.stop());
+
+                const merged = flattenArray(audioData);
+                const wavBlob = encodeWAV(merged, 16000);
+                const url = URL.createObjectURL(wavBlob);
+
+                const audio = document.getElementById("audioPlayback");
+                audio.src = url;
+                audio.style.display = "block";
+                audio.load();
+
+                const link = document.getElementById("downloadLink");
+                link.href = url;
+                link.style.display = "inline-block";
+
+                document.getElementById("status").innerText = "✅ Recording complete!";
+                document.getElementById("stopBtn").disabled = true;
             };
-            
-            mediaRecorder.start();
-            document.getElementById('startBtn').disabled = true;
-            document.getElementById('stopBtn').disabled = false;
-            document.getElementById('status').innerHTML = '🎙️ Recording... Click Stop when finished.';
-            
-        } catch (err) {
-            console.error('Error accessing microphone:', err);
-            document.getElementById('status').innerHTML = '❌ Error accessing microphone. Please allow microphone access.';
-        }
+        });
     }
 
-    function stopRecording() {
-        if (mediaRecorder && mediaRecorder.state === 'recording') {
-            mediaRecorder.stop();
-            document.getElementById('startBtn').disabled = false;
-            document.getElementById('stopBtn').disabled = true;
+    function flattenArray(channelData) {
+        let length = 0;
+        for (let i = 0; i < channelData.length; i++) {
+            length += channelData[i].length;
         }
+        const result = new Float32Array(length);
+        let offset = 0;
+        for (let i = 0; i < channelData.length; i++) {
+            result.set(channelData[i], offset);
+            offset += channelData[i].length;
+        }
+        return result;
     }
 
-    function playRecording() {
-        const audio = document.getElementById('audioPlayback');
-        audio.play();
-    }
+    function encodeWAV(samples, sampleRate) {
+        const buffer = new ArrayBuffer(44 + samples.length * 2);
+        const view = new DataView(buffer);
 
-    function downloadRecording() {
-        if (audioBlob) {
-            const url = URL.createObjectURL(audioBlob);
-            const a = document.createElement('a');
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            a.href = url;
-            a.download = `cree_recording_${timestamp}.wav`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+        function writeString(view, offset, string) {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
         }
+
+        function floatTo16BitPCM(output, offset, input) {
+            for (let i = 0; i < input.length; i++, offset += 2) {
+                const s = Math.max(-1, Math.min(1, input[i]));
+                output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+        }
+
+        writeString(view, 0, "RIFF");
+        view.setUint32(4, 36 + samples.length * 2, true);
+        writeString(view, 8, "WAVE");
+        writeString(view, 12, "fmt ");
+        view.setUint32(16, 16, true); // Subchunk1Size
+        view.setUint16(20, 1, true);  // PCM
+        view.setUint16(22, 1, true);  // Channels
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true); // ByteRate
+        view.setUint16(32, 2, true); // BlockAlign
+        view.setUint16(34, 16, true); // BitsPerSample
+        writeString(view, 36, "data");
+        view.setUint32(40, samples.length * 2, true);
+
+        floatTo16BitPCM(view, 44, samples);
+
+        return new Blob([view], { type: "audio/wav" });
     }
     </script>
-    """
-    
-    # Display the recorder
-    components.html(audio_recorder_html, height=300)
-    
+    """, height=300)
+
     st.markdown("""
     **📋 Instructions:**
     1. Click **Start Recording** and allow microphone access
