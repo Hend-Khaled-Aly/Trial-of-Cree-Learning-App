@@ -14,6 +14,19 @@ from transformers import WhisperProcessor, WhisperModel
 from sklearn.neighbors import NearestNeighbors
 from cree_learning_model import CreeLearningModel
 from scipy.signal import resample
+import io
+import wave
+
+# Audio recorder imports
+try:
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+    import av
+    WEBRTC_AVAILABLE = True
+except ImportError:
+    WEBRTC_AVAILABLE = False
+
+# Add streamlit components import
+import streamlit.components.v1 as components
 
 # Set page config
 st.set_page_config(
@@ -28,6 +41,47 @@ FEATURES_PATH = os.path.join(MODELS_DIR, "features.npy")
 KNN_MODEL_PATH = os.path.join(MODELS_DIR, "knn_model.pkl")
 LABELS_PATH = os.path.join(MODELS_DIR, "labels.json")
 PATHS_PATH = os.path.join(MODELS_DIR, "paths.json")
+
+# Global variable to store recorded audio
+if 'recorded_audio' not in st.session_state:
+    st.session_state.recorded_audio = None
+
+# Audio recording class
+class AudioRecorder:
+    def __init__(self):
+        self.frames = []
+        self.sample_rate = 16000  # 16kHz for Whisper compatibility
+        
+    def process_audio_frame(self, frame):
+        """Process each audio frame from the recorder"""
+        sound = frame.to_ndarray().astype(np.float32)
+        # Convert to mono if stereo
+        if len(sound.shape) > 1:
+            sound = sound.mean(axis=1)
+        self.frames.extend(sound)
+        return frame
+    
+    def get_audio_data(self):
+        """Get the recorded audio as numpy array"""
+        if self.frames:
+            return np.array(self.frames, dtype=np.float32)
+        return None
+    
+    def save_as_wav(self, filename):
+        """Save recorded audio as WAV file"""
+        if self.frames:
+            audio_data = np.array(self.frames, dtype=np.float32)
+            # Normalize audio
+            if np.max(np.abs(audio_data)) > 0:
+                audio_data = audio_data / np.max(np.abs(audio_data))
+            
+            sf.write(filename, audio_data, self.sample_rate)
+            return True
+        return False
+    
+    def clear(self):
+        """Clear recorded frames"""
+        self.frames = []
 
 # Helper function to check if files exist
 def check_audio_files():
@@ -197,10 +251,48 @@ def extract_whisper_embedding(audio_path, processor, model):
         st.error(f"Error extracting embeddings: {str(e)}")
         return None
 
+def extract_whisper_embedding_from_array(audio_array, sample_rate, processor, model):
+    """Extract Whisper embeddings from audio numpy array"""
+    try:
+        inputs = processor(audio_array, sampling_rate=sample_rate, return_tensors="pt")
+        input_features = inputs.input_features.to(model.device)
+        
+        with torch.no_grad():
+            encoder_out = model.encoder(input_features)[0]
+        
+        return encoder_out.mean(dim=1).cpu().numpy().squeeze()
+    except Exception as e:
+        st.error(f"Error extracting embeddings: {str(e)}")
+        return None
+
 def query_audio(audio_path, knn_model, labels, paths, processor, model, top_k=3):
     """Find similar audio files with error handling"""
     try:
         query_emb = extract_whisper_embedding(audio_path, processor, model)
+        if query_emb is None:
+            return []
+        
+        query_emb = query_emb.reshape(1, -1)
+        distances, indices = knn_model.kneighbors(query_emb, n_neighbors=top_k)
+        
+        results = []
+        for i, idx in enumerate(indices[0]):
+            results.append({
+                'rank': i + 1,
+                'label': labels[idx],
+                'distance': distances[0][i],
+                'path': paths[idx]
+            })
+        
+        return results
+    except Exception as e:
+        st.error(f"Error querying audio: {str(e)}")
+        return []
+
+def query_audio_from_array(audio_array, sample_rate, knn_model, labels, paths, processor, model, top_k=3):
+    """Find similar audio files from numpy array with error handling"""
+    try:
+        query_emb = extract_whisper_embedding_from_array(audio_array, sample_rate, processor, model)
         if query_emb is None:
             return []
         
@@ -245,10 +337,211 @@ def get_audio_player_html(audio_path):
     except Exception as e:
         return f"<p>Error loading audio: {str(e)}</p>"
 
+# Add this function after the existing functions and before audio_learning_app()
+def simple_audio_recorder():
+    """Simple HTML5 audio recorder using JavaScript"""
+    st.subheader("🎙️ Record Audio")
+    
+    # HTML and JavaScript for audio recording
+    audio_recorder_html = """
+    <div style="padding: 20px; border: 1px solid #ddd; border-radius: 10px; background-color: #f9f9f9;">
+        <h4>🎙️ Browser Audio Recorder</h4>
+        <div style="margin: 10px 0;">
+            <button id="startBtn" onclick="startRecording()" style="background-color: #ff4444; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin: 5px; cursor: pointer;">🔴 Start Recording</button>
+            <button id="stopBtn" onclick="stopRecording()" disabled style="background-color: #444444; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin: 5px; cursor: pointer;">⏹️ Stop Recording</button>
+            <button id="playBtn" onclick="playRecording()" disabled style="background-color: #44aa44; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin: 5px; cursor: pointer;">▶️ Play</button>
+        </div>
+        <div id="status" style="margin: 10px 0; font-weight: bold; color: #666;"></div>
+        <audio id="audioPlayback" controls style="width: 100%; margin: 10px 0; display: none;"></audio>
+        <div style="margin: 10px 0;">
+            <button id="downloadBtn" onclick="downloadRecording()" disabled style="background-color: #0066cc; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer;">💾 Download WAV</button>
+        </div>
+    </div>
+
+    <script>
+    let mediaRecorder;
+    let recordedChunks = [];
+    let audioBlob;
+
+    async function startRecording() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    sampleRate: 16000,
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                } 
+            });
+            
+            recordedChunks = [];
+            mediaRecorder = new MediaRecorder(stream);
+            
+            mediaRecorder.ondataavailable = function(event) {
+                if (event.data.size > 0) {
+                    recordedChunks.push(event.data);
+                }
+            };
+            
+            mediaRecorder.onstop = function() {
+                audioBlob = new Blob(recordedChunks, { type: 'audio/wav' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+                document.getElementById('audioPlayback').src = audioUrl;
+                document.getElementById('audioPlayback').style.display = 'block';
+                document.getElementById('playBtn').disabled = false;
+                document.getElementById('downloadBtn').disabled = false;
+                document.getElementById('status').innerHTML = '✅ Recording completed! Duration: ' + 
+                    Math.round(audioBlob.size / 16000) + ' seconds (approx)';
+                
+                // Clean up the stream
+                stream.getTracks().forEach(track => track.stop());
+            };
+            
+            mediaRecorder.start();
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('stopBtn').disabled = false;
+            document.getElementById('status').innerHTML = '🎙️ Recording... Click Stop when finished.';
+            
+        } catch (err) {
+            console.error('Error accessing microphone:', err);
+            document.getElementById('status').innerHTML = '❌ Error accessing microphone. Please allow microphone access.';
+        }
+    }
+
+    function stopRecording() {
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+        }
+    }
+
+    function playRecording() {
+        const audio = document.getElementById('audioPlayback');
+        audio.play();
+    }
+
+    function downloadRecording() {
+        if (audioBlob) {
+            const url = URL.createObjectURL(audioBlob);
+            const a = document.createElement('a');
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            a.href = url;
+            a.download = `cree_recording_${timestamp}.wav`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+    }
+    </script>
+    """
+    
+    # Display the recorder
+    components.html(audio_recorder_html, height=300)
+    
+    st.markdown("""
+    **📋 Instructions:**
+    1. Click **Start Recording** and allow microphone access
+    2. Speak clearly into your microphone
+    3. Click **Stop Recording** when finished
+    4. Click **Play** to review your recording
+    5. Click **Download WAV** to save the file
+    6. Upload the downloaded file using the "Upload File" tab above
+    """)
+    
+    st.info("💡 **Note:** This recorder saves files to your device. After recording, download the WAV file and upload it using the file upload feature above.")
+    
+    return None
+    """Audio recorder component using streamlit-webrtc"""
+    if not WEBRTC_AVAILABLE:
+        st.error("❌ Audio recording not available. Please install streamlit-webrtc.")
+        return None
+    
+    st.subheader("🎙️ Record Audio")
+    
+    # Initialize recorder
+    if 'audio_recorder' not in st.session_state:
+        st.session_state.audio_recorder = AudioRecorder()
+    
+    # WebRTC configuration for better compatibility
+    rtc_configuration = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
+    
+    # Recording controls
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("🔴 Start Recording", key="start_rec"):
+            st.session_state.audio_recorder.clear()
+            st.session_state.recording = True
+    
+    with col2:
+        if st.button("⏹️ Stop Recording", key="stop_rec"):
+            st.session_state.recording = False
+    
+    with col3:
+        if st.button("🗑️ Clear Recording", key="clear_rec"):
+            st.session_state.audio_recorder.clear()
+            st.session_state.recorded_audio = None
+            if 'recording' in st.session_state:
+                del st.session_state.recording
+    
+    # WebRTC streamer for audio recording
+    if st.session_state.get('recording', False):
+        st.info("🎙️ Recording... Click 'Stop Recording' when done.")
+        
+        def audio_frame_callback(frame):
+            st.session_state.audio_recorder.process_audio_frame(frame)
+            return frame
+        
+        webrtc_ctx = webrtc_streamer(
+            key="audio-recorder",
+            mode=WebRtcMode.SENDONLY,
+            audio_frame_callback=audio_frame_callback,
+            rtc_configuration=rtc_configuration,
+            media_stream_constraints={
+                "video": False,
+                "audio": {
+                    "sampleRate": 16000,
+                    "channelCount": 1,
+                    "echoCancellation": True,
+                    "noiseSuppression": True,
+                    "autoGainControl": True,
+                },
+            },
+        )
+        
+        if not webrtc_ctx.state.playing:
+            st.session_state.recording = False
+    
+    # Show recorded audio if available
+    audio_data = st.session_state.audio_recorder.get_audio_data()
+    if audio_data is not None and len(audio_data) > 0:
+        st.success(f"✅ Audio recorded! Duration: {len(audio_data) / 16000:.1f} seconds")
+        
+        # Create temporary file for playback
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
+            sf.write(tmp_file.name, audio_data, 16000)
+            
+            # Play recorded audio
+            with open(tmp_file.name, "rb") as audio_file:
+                audio_bytes = audio_file.read()
+                st.audio(audio_bytes, format="audio/wav")
+            
+            # Store the recorded audio path
+            st.session_state.recorded_audio = tmp_file.name
+            
+            return tmp_file.name
+    
+    return None
+
 def audio_learning_app():
-    """Audio Learning/Matching App with better error handling"""
+    """Audio Learning/Matching App with recording capability"""
     st.header("🎵 Audio Matching")
-    st.markdown("Upload an audio file to find similar audio clips from the trained dataset.")
+    st.markdown("Upload an audio file or record audio to find similar audio clips from the trained dataset.")
     
     # Check if required files exist first
     files_exist, missing_files = check_audio_files()
@@ -294,127 +587,160 @@ def audio_learning_app():
     # Audio Input Section
     st.subheader("🎙️ Input Audio")
     
-    # Add format information
-    with st.expander("📋 Supported Audio Format: WAV files"):
-        st.write("**📏 Recommended:** 2-30 seconds, 16kHz sample rate")
+    # Tabs for different input methods
+    tab1, tab2 = st.tabs(["📁 Upload File", "🎙️ Record Audio"])
     
-    uploaded_file = st.file_uploader("Upload Audio File", type=["wav"])
+    audio_source = None
+    use_recorded = False
     
-    if uploaded_file:
-        audio_bytes = uploaded_file.getvalue()
-        audio_filename = uploaded_file.name
-        file_extension = audio_filename.split('.')[-1].lower()
+    with tab1:
+        st.markdown("**📏 Recommended:** 2-30 seconds, 16kHz sample rate")
+        uploaded_file = st.file_uploader("Upload Audio File", type=["wav", "mp3"])
         
-        # Show file info
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write(f"📁 **File**: {audio_filename}")
-            st.write(f"📏 **Size**: {len(audio_bytes):,} bytes")
-        with col2:
-            st.write(f"🎵 **Format**: {file_extension.upper()}")
-            if file_extension == 'mp3':
-                st.warning("⚠️ MP3 format may require conversion")
-        
-        st.audio(audio_bytes, format=f"audio/{file_extension}")
-
-        # Handle different file formats
-        temp_path = None
-        conversion_needed = file_extension == 'mp3'
-        
-        if conversion_needed:
-            st.info("🔄 MP3 detected. Attempting conversion...")
+        if uploaded_file:
+            audio_bytes = uploaded_file.getvalue()
+            audio_filename = uploaded_file.name
+            file_extension = audio_filename.split('.')[-1].lower()
             
-            # Try FFmpeg conversion
-            converted_path = convert_mp3_to_wav_browser(uploaded_file)
-            if converted_path:
-                temp_path = converted_path
-                st.success("✅ Successfully converted MP3 to WAV!")
-            else:
-                st.error("❌ MP3 conversion failed.")
-                st.markdown("""
-                **🛠️ Manual Conversion Required:**
-                
-                1. **Online Converters**: Use [CloudConvert](https://cloudconvert.com/mp3-to-wav) or [Online-Convert](https://audio.online-convert.com/convert-to-wav)
-                2. **Desktop Software**: Use Audacity (free) or other audio editors
-                3. **Settings**: Convert to WAV, 16kHz sample rate, mono channel
-                
-                **Or try this quick fix:**
-                - Record your audio again and save as WAV format
-                """)
-                return
+            # Show file info
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"📁 **File**: {audio_filename}")
+                st.write(f"📏 **Size**: {len(audio_bytes):,} bytes")
+            with col2:
+                st.write(f"🎵 **Format**: {file_extension.upper()}")
+                if file_extension == 'mp3':
+                    st.warning("⚠️ MP3 format may require conversion")
+            
+            st.audio(audio_bytes, format=f"audio/{file_extension}")
+            audio_source = uploaded_file
+    
+    with tab2:
+        if WEBRTC_AVAILABLE:
+            recorded_path = audio_recorder_component()
+            if recorded_path:
+                audio_source = recorded_path
+                use_recorded = True
         else:
-            # Create temporary file for WAV
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
-                tmp_file.write(audio_bytes)
-                temp_path = tmp_file.name
+            # Use simple HTML5 recorder as fallback
+            simple_audio_recorder()
+            st.info("🎙️ Use the recorder above to record audio, then upload the downloaded file in the 'Upload File' tab.")
+    
+    # Process audio if available
+    if audio_source:
+        if st.button("🔍 Find Similar Audio", type="primary"):
+            temp_path = None
+            
+            try:
+                if use_recorded:
+                    # Use recorded audio directly
+                    temp_path = audio_source
+                else:
+                    # Handle uploaded file
+                    audio_bytes = audio_source.getvalue()
+                    audio_filename = audio_source.name
+                    file_extension = audio_filename.split('.')[-1].lower()
+                    
+                    conversion_needed = file_extension == 'mp3'
+                    
+                    if conversion_needed:
+                        st.info("🔄 MP3 detected. Attempting conversion...")
+                        
+                        # Try FFmpeg conversion
+                        converted_path = convert_mp3_to_wav_browser(audio_source)
+                        if converted_path:
+                            temp_path = converted_path
+                            st.success("✅ Successfully converted MP3 to WAV!")
+                        else:
+                            st.error("❌ MP3 conversion failed.")
+                            st.markdown("""
+                            **🛠️ Manual Conversion Required:**
+                            
+                            1. **Online Converters**: Use [CloudConvert](https://cloudconvert.com/mp3-to-wav) or [Online-Convert](https://audio.online-convert.com/convert-to-wav)
+                            2. **Desktop Software**: Use Audacity (free) or other audio editors
+                            3. **Settings**: Convert to WAV, 16kHz sample rate, mono channel
+                            
+                            **Or try this quick fix:**
+                            - Record your audio again and save as WAV format
+                            """)
+                            return
+                    else:
+                        # Create temporary file for WAV
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file_extension}") as tmp_file:
+                            tmp_file.write(audio_bytes)
+                            temp_path = tmp_file.name
 
-        try:
-            if temp_path and os.path.exists(temp_path):
-                st.subheader("🔍 Processing...")
-                progress_bar = st.progress(0)
-                status = st.empty()
+                if temp_path and os.path.exists(temp_path):
+                    st.subheader("🔍 Processing...")
+                    progress_bar = st.progress(0)
+                    status = st.empty()
 
-                status.text("Extracting embeddings...")
-                progress_bar.progress(30)
+                    status.text("Extracting embeddings...")
+                    progress_bar.progress(30)
 
-                results = query_audio(temp_path, knn_model, labels, paths, processor, model, top_k)
+                    if use_recorded:
+                        # Process recorded audio
+                        audio_data = st.session_state.audio_recorder.get_audio_data()
+                        results = query_audio_from_array(audio_data, 16000, knn_model, labels, paths, processor, model, top_k)
+                    else:
+                        # Process uploaded audio
+                        results = query_audio(temp_path, knn_model, labels, paths, processor, model, top_k)
 
-                if not results:
-                    st.error("Failed to process audio.")
-                    st.info("**Possible solutions:**")
-                    st.info("• Try converting MP3 to WAV format first")
-                    st.info("• Ensure audio is clear and not corrupted")
-                    st.info("• Try a different audio file")
-                    return
+                    if not results:
+                        st.error("Failed to process audio.")
+                        st.info("**Possible solutions:**")
+                        st.info("• Try converting MP3 to WAV format first")
+                        st.info("• Ensure audio is clear and not corrupted")
+                        st.info("• Try a different audio file")
+                        return
 
-                progress_bar.progress(100)
-                status.text("✅ Done!")
+                    progress_bar.progress(100)
+                    status.text("✅ Done!")
 
-                st.subheader("🎯 Top Matches")
-                for result in results:
-                    with st.expander(f"#{result['rank']} - {result['label']} (Distance: {result['distance']:.3f})"):
-                        col1, col2 = st.columns([1, 2])
-                        with col1:
-                            st.write(f"**Label:** {result['label']}")
-                            st.write(f"**Distance:** {result['distance']:.3f}")
-                            similarity = 1 - result['distance']
-                            st.write(f"**Similarity:** {similarity:.3f}")
-                            if similarity > 0.8:
-                                st.success("🟢 Very Similar")
-                            elif similarity > 0.6:
-                                st.warning("🟡 Moderately Similar")
-                            else:
-                                st.error("🔴 Less Similar")
-                        with col2:
-                            AUDIO_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "wav"))
-                            audio_filename = os.path.basename(result['path'])
-                            audio_file_path = os.path.join(AUDIO_BASE_DIR, audio_filename)
-                            if os.path.exists(audio_file_path):
-                                try:
-                                    with open(audio_file_path, 'rb') as f:
-                                        st.audio(f.read(), format="audio/wav")
-                                except Exception as e:
-                                    st.error(f"Error playing audio: {str(e)}")
-                            else:
-                                st.error("Audio file not found: {audio_file_path}")
+                    st.subheader("🎯 Top Matches")
+                    for result in results:
+                        with st.expander(f"#{result['rank']} - {result['label']} (Distance: {result['distance']:.3f})"):
+                            col1, col2 = st.columns([1, 2])
+                            with col1:
+                                st.write(f"**Label:** {result['label']}")
+                                st.write(f"**Distance:** {result['distance']:.3f}")
+                                similarity = 1 - result['distance']
+                                st.write(f"**Similarity:** {similarity:.3f}")
+                                if similarity > 0.8:
+                                    st.success("🟢 Very Similar")
+                                elif similarity > 0.6:
+                                    st.warning("🟡 Moderately Similar")
+                                else:
+                                    st.error("🔴 Less Similar")
+                            with col2:
+                                AUDIO_BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "data", "wav"))
+                                audio_filename = os.path.basename(result['path'])
+                                audio_file_path = os.path.join(AUDIO_BASE_DIR, audio_filename)
+                                if os.path.exists(audio_file_path):
+                                    try:
+                                        with open(audio_file_path, 'rb') as f:
+                                            st.audio(f.read(), format="audio/wav")
+                                    except Exception as e:
+                                        st.error(f"Error playing audio: {str(e)}")
+                                else:
+                                    st.error("Audio file not found: {audio_file_path}")
 
-                st.subheader("📊 Summary")
-                distances = [r["distance"] for r in results]
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Best Distance", f"{min(distances):.3f}")
-                col2.metric("Average", f"{np.mean(distances):.3f}")
-                col3.metric("Best Similarity", f"{1 - min(distances):.3f}")
+                    st.subheader("📊 Summary")
+                    distances = [r["distance"] for r in results]
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Best Distance", f"{min(distances):.3f}")
+                    col2.metric("Average", f"{np.mean(distances):.3f}")
+                    col3.metric("Best Similarity", f"{1 - min(distances):.3f}")
 
-        except Exception as e:
-            st.error(f"❌ Error processing audio: {str(e)}")
-            st.info("**Debug Information:**")
-            st.info(f"• File format: {file_extension}")
-            st.info(f"• Conversion needed: {conversion_needed}")
-            st.info(f"• Temp file exists: {os.path.exists(temp_path) if temp_path else 'No temp file'}")
+            except Exception as e:
+                st.error(f"❌ Error processing audio: {str(e)}")
+                st.info("**Debug Information:**")
+                st.info(f"• Audio source: {'Recorded' if use_recorded else 'Uploaded'}")
+                st.info(f"• Temp file exists: {os.path.exists(temp_path) if temp_path else 'No temp file'}")
 
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
+            finally:
+                if temp_path and os.path.exists(temp_path) and not use_recorded:
+                    os.remove(temp_path)
 
 def text_learning_app():
     """Text Learning App with better error handling"""
